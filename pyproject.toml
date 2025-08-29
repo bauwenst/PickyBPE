@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pickybpe"
+version = "1.0.0"
+requires-python = ">= 3.9"
+authors = [
+    {name = "Pavel Chizhov", email = "pavel.chizhov@thws.de"},
+    {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"},
+]
+maintainers = [
+    {name = "Pavel Chizhov", email = "pavel.chizhov@thws.de"}
+]
+description = "BPE modification that implements removing intermediate tokens during tokenizer training."
+readme = "README.md"
+keywords = ["NLP", "tokenizers", "tokenization", "subwords", "segmentation", "natural language", "pickybpe"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research"
+]
+dependencies = [
+    "numpy",
+]

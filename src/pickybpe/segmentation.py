@@ -1,19 +1,19 @@
+from pathlib import Path
+
 import json
 import time
-import argparse
 import numpy as np
-from utils import WHITESPACE, UNK
-from language import Token, Word
 from collections import defaultdict
 from functools import lru_cache
-
-
 import logging
+logger = logging.getLogger(__name__)
+
+from .utils import WHITESPACE, UNK, Token, Word
 
 
-class BPEModel:
+class PickyBPECore:
 
-    def __init__(self, bpe_model_path):
+    def __init__(self, bpe_model_path: Path):
         self.id2token = dict()
         self.str2token = dict()
         self.id2int = dict()
@@ -145,18 +145,3 @@ class BPEModel:
         elif input_type != 'str':
             raise NotImplementedError(f'Unknown input type: {input_type}. Available options: str, int.')
         return '\n'.join([''.join(sentence).replace(WHITESPACE, ' ').strip() for sentence in sentences])
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--bpe_model', type=str, required=True, help='Path to the BPE model.')
-    parser.add_argument('--input_file', type=str, required=True, help='Path to the input file.')
-    parser.add_argument('--output_file', type=str, required=True, help='Path to the output file.')
-    parser.add_argument('--return_type', type=str, default='str', help='Return type: str or int.')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-
-    model = BPEModel(args.bpe_model)
-    model.encode_file(args.input_file, args.output_file, args.return_type)
