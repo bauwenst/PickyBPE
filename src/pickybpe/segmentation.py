@@ -1,4 +1,4 @@
-from typing import Union, Any
+from typing import Union, Any, Optional
 from pathlib import Path
 
 import json
@@ -18,24 +18,26 @@ class PickyBPECore:
 
     def __init__(
         self,
-        id2token: dict[int, Token],
-        str2token: dict[str, Token],
-        id2int: dict[str, int],
-        int2id: dict[int, str],
+        str2token: dict[str, Token],  # This is the only one you actually need for basic tokenisation, and it's essentially a rich vocabulary mapping (token string -> token object).
+        id2int: Optional[dict[str, int]],      # Used for encoding, but really only in postprocessing.
+        id2token: Optional[dict[int, Token]],  # Only used for decoding.
+        int2id: Optional[dict[int, str]],      # Only used for decoding.
 
         merge_map: dict[tuple[Token, Token], np.ndarray],
         split_map: dict[Token, np.ndarray],
         splits: dict[int, list[Token]],
-        events: list[dict[str, Any]]
+
+        events: Optional[list[dict[str, Any]]]  # Only used in the inefficient implementation of encoding.
     ):
-        self.id2token: dict[int,Token]  = id2token
         self.str2token: dict[str,Token] = str2token
         self.id2int: dict[str,int]      = id2int
+        self.id2token: dict[int,Token]  = id2token
         self.int2id: dict[int,str]      = int2id
 
         self.merge_map: dict[tuple[Token,Token],np.ndarray] = merge_map
         self.split_map: dict[Token,np.ndarray] = split_map
         self.splits: dict[int,list[Token]]     = splits
+
         self.events: list[dict[str,Any]]       = events
 
     @classmethod
@@ -92,6 +94,12 @@ class PickyBPECore:
 
     @lru_cache(maxsize=None)
     def _encode_word_by_event_sequence(self, word: str) -> list[Token]:
+        """
+        Tokenises the word by replaying all the events (merges + removals) in chronological order.
+        This is slow because most events have nothing to do with the current word.
+        """
+        assert self.events is not None
+
         if word in self.str2token and self.str2token[word].present:
             return [self.str2token[word]]
 
@@ -112,6 +120,10 @@ class PickyBPECore:
 
     @lru_cache(maxsize=None)
     def _encode_word_by_events(self, word: str) -> list[Token]:
+        """
+        Tokenises the word by iteratively checking for all the relevant events pertaining to the current state of the
+        word and executing the earliest one.
+        """
         if word in self.str2token and self.str2token[word].present:
             return [self.str2token[word]]
 
@@ -119,12 +131,12 @@ class PickyBPECore:
         word = Word(0, word)
         word.encode(self.str2token)
         while True:
-            pairs = [pair for pair in word.pairs if pair in self.merge_map]
-            pairs = [(pair, self.merge_map[pair][np.searchsorted(self.merge_map[pair], previous_event)]) for pair in pairs
-                     if np.any(self.merge_map[pair] >= previous_event)]
-            removals = [token for token in word.tokens if token in self.split_map]
+            pairs = [(pair, self.merge_map[pair][np.searchsorted(self.merge_map[pair], previous_event)])
+                     for pair in word.pairs
+                     if pair in self.merge_map and np.any(self.merge_map[pair] >= previous_event)]
             removals = [(token, self.split_map[token][np.searchsorted(self.split_map[token], previous_event)])
-                        for token in removals if np.any(self.split_map[token] >= previous_event)]
+                        for token in word.tokens
+                        if token in self.split_map and np.any(self.split_map[token] >= previous_event)]
             if not pairs and not removals:
                 break
 
@@ -147,6 +159,9 @@ class PickyBPECore:
         return word.tokens
 
     def encode_file(self, input_file: str, output_file: str, return_type: str='str'):
+        if return_type == "int":
+            assert self.id2int is not None
+
         start_time = time.time()
         result = []
         with open(input_file, 'r') as file:
@@ -154,12 +169,14 @@ class PickyBPECore:
             for i, line in enumerate(file):
                 words = line.strip().split()
                 tokens = [token for word in words for token in self._encode_word_by_events(WHITESPACE + word)]
+
                 if return_type == 'str':
                     result.append(' '.join([token.str for token in tokens]))
                 elif return_type == 'int':
                     result.append(' '.join([str(self.id2int[str(token.id)]) for token in tokens]))
                 else:
                     raise NotImplementedError(f'Unknown return type: {return_type}. Available options: str, int.')
+
                 if i > 0 and i % 100000 == 0:
                     logger.info(f'Encoded {i} lines. Elapsed time: {time.time() - start_time:.2f} seconds.')
 
@@ -173,6 +190,7 @@ class PickyBPECore:
     def decode(self, text: str, input_type: str = 'str') -> str:
         sentences = [sentence.strip().split(' ') for sentence in text.strip().split('\n')]
         if input_type == 'int':
+            assert self.id2token is not None and self.int2id is not None
             sentences = [[self.id2token[self.int2id[token]].str for token in sentence] for sentence in sentences]
         elif input_type != 'str':
             raise NotImplementedError(f'Unknown input type: {input_type}. Available options: str, int.')

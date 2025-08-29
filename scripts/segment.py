@@ -14,5 +14,5 @@ args = parser.parse_args()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-model = PickyBPECore(args.bpe_model)
+model = PickyBPECore.from_pretrained(args.bpe_model)
 model.encode_file(args.input_file, args.output_file, args.return_type)
