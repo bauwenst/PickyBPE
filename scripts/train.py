@@ -24,7 +24,7 @@ trainer = PickyBPETrainer(
     unk_id=args.unk_id,
     bos_id=args.bos_id,
     eos_id=args.eos_id,
-    coverage=args.coverage,
-    threshold=args.threshold
+    character_coverage=args.coverage,
+    picky_threshold=args.threshold
 )
 trainer.fit(args.input_file, args.model_file, args.logging_step)

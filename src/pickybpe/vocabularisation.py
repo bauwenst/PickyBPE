@@ -24,31 +24,32 @@ class PickyBPETrainer:
     def __init__(
         self,
         vocab_size: int,
+        character_coverage: float = 0.9999,
+        picky_threshold: float = 0.9999,
+
         pad_id: int = 0,
         unk_id: int = 1,
         bos_id: int = 2,
         eos_id: int = 3,
-        coverage: float = 0.9999,
-        threshold: float = 0.9999,
     ):
         self.desired_vocab_size = vocab_size
+        self.coverage: float = character_coverage
+        self.threshold: float = picky_threshold
+
         self.pad_token = Token(pad_id, PAD, 0, special=True)
         self.unk_token = Token(unk_id, UNK, 0, special=True)
         self.bos_token = Token(bos_id, BOS, 0, special=True)
         self.eos_token = Token(eos_id, EOS, 0, special=True)
-        self.id2token = {
-            token.id: token for token in [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
-        }
-        self.str2token = {
-            token.str: token for token in [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
-        }
+        specials = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
+
+        self.id2token  = {token.id: token  for token in specials}
+        self.str2token = {token.str: token for token in specials}
         self.str2token = defaultdict(lambda: self.unk_token, self.str2token)
         self.max_special_token_id = max(self.id2token.keys())
-        self.actual_vocab_size = len(self.id2token)
+        self.actual_vocab_size    = len(self.id2token)
         self.new_id = self.max_special_token_id + 1
-        self.coverage = coverage
-        self.threshold = threshold
-        self.events = list()
+
+        self.events: list[Union[tuple[EventType,Token,list[Token]],tuple[EventType,list[Token],Token]]] = []
 
     @staticmethod
     def _get_words(file: str) -> list[Word]:
@@ -61,9 +62,8 @@ class PickyBPETrainer:
                 if i > 0 and i % 500000 == 0:
                     logger.info(f'Processed {i} lines.')
             num_lines = i
-        logger.info(
-            f'Loaded {len(counter)} unique words from {num_lines} sentences in {time.time() - start_time:.2f}s.'
-        )
+
+        logger.info(f'Loaded {len(counter)} unique words from {num_lines} sentences in {time.time() - start_time:.2f}s.')
         return [Word(i, WHITESPACE + word, freq) for i, (word, freq) in enumerate(counter.items())]
 
     @staticmethod
@@ -127,12 +127,7 @@ class PickyBPETrainer:
         return pairs
 
     @staticmethod
-    def _update_pairs_on_merge(
-        new_token: Token,
-        pair: tuple[Token, Token],
-        pairs_for_update: MCounter,
-        pairs: MCounter
-    ):
+    def _update_pairs_on_merge(new_token: Token, pair: tuple[Token, Token], pairs_for_update: MCounter, pairs: MCounter):
         pairs.update(pairs_for_update)
         for p, freq in pairs_for_update.items():
             if new_token not in p:
@@ -183,12 +178,7 @@ class PickyBPETrainer:
                 return True
         return False
 
-    def _merge_token_in_words(
-            self,
-            token_to_merge: Token,
-            pair_to_merge: tuple[Token, Token],
-            pairs: MCounter,
-    ) -> int:
+    def _merge_token_in_words(self, token_to_merge: Token, pair_to_merge: tuple[Token, Token], pairs: MCounter) -> int:
         actual_freq = 0
         pairs_for_update = MCounter()
         for word in pair_to_merge[0].words & pair_to_merge[1].words:
@@ -252,20 +242,24 @@ class PickyBPETrainer:
             if self.id2token[i].present:
                 id_mapping[i] = id_counter
                 id_counter += 1
-        with open(file, 'w') as f:
+        with open(file, "w", encoding="utf-8") as f:
             json.dump({
                 'tokens': [token.to_dict() for token in self.id2token.values()],
                 'id2int': id_mapping,
                 'int2id': {v: k for k, v in id_mapping.items()},
-                'merges': [{'id': i, 'pair': [token.to_dict() for token in merge[1]],
-                            'new_token': merge[2].to_dict()}
-                           for i, merge in enumerate(self.events) if merge[0] == EventType.MERGE],
-                'splits': [{'id': i, 'token': merge[1].to_dict(),
-                            'split': [token.to_dict() for token in merge[2]]}
-                           for i, merge in enumerate(self.events) if merge[0] == EventType.SPLIT],
+                'merges': [{
+                    'id': i,
+                    'pair': [token.to_dict() for token in merge[1]],
+                    'new_token': merge[2].to_dict()
+                } for i, merge in enumerate(self.events) if merge[0] == EventType.MERGE],
+                'splits': [{
+                    'id': i,
+                    'token': merge[1].to_dict(),
+                    'split': [token.to_dict() for token in merge[2]]
+                } for i, merge in enumerate(self.events) if merge[0] == EventType.SPLIT],
             }, f, indent=4)
 
-    def fit(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int = 200) -> None:
+    def fit(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int = 200) -> Path:
         words = self._get_words(input_file)
         self._initialize_vocab(words)
         self._encode_words(words)
@@ -288,3 +282,4 @@ class PickyBPETrainer:
                 )
                 merge_time = []
         self._dump(model_file)
+        return Path(model_file).resolve()
