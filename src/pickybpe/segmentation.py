@@ -23,22 +23,22 @@ class PickyBPECore:
         id2token: Optional[dict[int, Token]],  # Only used for decoding.
         int2id: Optional[dict[int, str]],      # Only used for decoding.
 
-        merge_map: dict[tuple[Token, Token], np.ndarray],
-        split_map: dict[Token, np.ndarray],
+        merge_map: dict[tuple[Token, Token], list[int]],
+        split_map: dict[Token, list[int]],
         splits: dict[int, list[Token]],
 
         events: Optional[list[dict[str, Any]]]  # Only used in the inefficient implementation of encoding.
     ):
-        self.str2token: dict[str,Token] = str2token
+        self.str2token: dict[str,Token] = defaultdict(lambda: str2token[UNK], str2token) if UNK in str2token else str2token
         self.id2int: dict[str,int]      = id2int
         self.id2token: dict[int,Token]  = id2token
         self.int2id: dict[int,str]      = int2id
 
-        self.merge_map: dict[tuple[Token,Token],np.ndarray] = merge_map
-        self.split_map: dict[Token,np.ndarray] = split_map
-        self.splits: dict[int,list[Token]]     = splits
+        self.merge_map: dict[tuple[Token,Token],np.ndarray] = {key: np.array(value) for key, value in merge_map.items()}  # Maps a pair of tokens to the event ID that merges them.
+        self.split_map: dict[Token,np.ndarray]              = {key: np.array(value) for key, value in split_map.items()}  # Maps a token to the event ID that removes it.
+        self.splits: dict[int,list[Token]] = splits  # Maps the event ID of a split event to the tokens into which the split happens. The equivalent structure for merges is not needed because we can just concatenate the pair.
 
-        self.events: list[dict[str,Any]]       = events
+        self.events: list[dict[str,Any]] = events
 
     @classmethod
     def from_pretrained(self, pickybpe_model_path: PathLike) -> "PickyBPECore":
@@ -49,36 +49,27 @@ class PickyBPECore:
         str2token = dict()
         for token_dict in sorted(serialised['tokens'], key=lambda x: x['id']):
             token = Token(
-                token_dict['id'],
-                token_dict['str'],
-                token_dict['freq'],
-                token_dict['special'],
-                token_dict['present'],
-                id2token[token_dict['left']]  if token_dict['left']  is not None else None,
-                id2token[token_dict['right']] if token_dict['right'] is not None else None,
-                [id2token[i] for i in token_dict['split']] if len(token_dict['split']) > 1 else None
+                id=token_dict['id'],
+                str=token_dict['str'],
+                freq=token_dict['freq'],
+                special=token_dict['special'],
+                present=token_dict['present'],
+                left=id2token[token_dict['left']]  if token_dict['left']  is not None else None,
+                right=id2token[token_dict['right']] if token_dict['right'] is not None else None,
+                split=[id2token[i] for i in token_dict['split']] if len(token_dict['split']) > 1 else None
             )
             id2token[token.id]   = token
             str2token[token.str] = token
 
-        assert UNK in str2token
-        str2token = defaultdict(lambda: str2token[UNK], str2token)
-
         merge_map = defaultdict(list)
         for merge in serialised['merges']:
             merge_map[(str2token[merge['pair'][0]['str']], str2token[merge['pair'][1]['str']])].append(merge['id'])
-        merge_map_numpy = dict()
-        for key,value in merge_map.items():
-            merge_map_numpy[key] = np.array(value)
 
         splits = dict()
         split_map = defaultdict(list)
         for split in serialised['splits']:
             split_map[str2token[split['token']['str']]].append(split['id'])
             splits[split['id']] = [str2token[token['str']] for token in split['split']]
-        split_map_numpy = dict()
-        for key,value in split_map.items():
-            split_map_numpy[key] = np.array(value)
 
         return PickyBPECore(
             id2token=id2token,
@@ -86,8 +77,8 @@ class PickyBPECore:
             id2int=serialised['id2int'],
             int2id=serialised['int2id'],
 
-            merge_map=merge_map_numpy,
-            split_map=split_map_numpy,
+            merge_map=merge_map,
+            split_map=split_map,
             splits=splits,
             events=sorted(serialised['merges'] + serialised['splits'], key=lambda x: x['id'])
         )

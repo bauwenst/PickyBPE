@@ -27,6 +27,7 @@ class PickyBPETrainer:
         character_coverage: float = 0.9999,
         picky_threshold: float = 0.9999,
 
+        include_specials: bool = True,
         pad_id: int = 0,
         unk_id: int = 1,
         bos_id: int = 2,
@@ -36,18 +37,22 @@ class PickyBPETrainer:
         self.coverage: float = character_coverage
         self.threshold: float = picky_threshold
 
-        self.pad_token = Token(pad_id, PAD, 0, special=True)
-        self.unk_token = Token(unk_id, UNK, 0, special=True)
-        self.bos_token = Token(bos_id, BOS, 0, special=True)
-        self.eos_token = Token(eos_id, EOS, 0, special=True)
-        specials = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
+        if include_specials:
+            self.pad_token = Token(pad_id, PAD, 0, special=True)
+            self.unk_token = Token(unk_id, UNK, 0, special=True)
+            self.bos_token = Token(bos_id, BOS, 0, special=True)
+            self.eos_token = Token(eos_id, EOS, 0, special=True)
+            specials = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
+            max_id = max(token.id for token in specials)
+        else:
+            specials = []
+            max_id = -1
 
         self.id2token  = {token.id: token  for token in specials}
         self.str2token = {token.str: token for token in specials}
         self.str2token = defaultdict(lambda: self.unk_token, self.str2token)
-        self.max_special_token_id = max(self.id2token.keys())
-        self.actual_vocab_size    = len(self.id2token)
-        self.new_id = self.max_special_token_id + 1
+        self.actual_vocab_size = len(specials)
+        self.new_id            = max_id + 1
 
         self.events: list[Union[tuple[EventType,Token,list[Token]],tuple[EventType,list[Token],Token]]] = []
 
@@ -88,7 +93,7 @@ class PickyBPETrainer:
                 logger.info(f'Replaced {num_to_remove} rare characters with UNK.')
         return characters
 
-    def _initialize_vocab(self, words: list[Word]) -> None:
+    def _initialize_vocab(self, words: list[Word]):
         logger.info('Initializing the vocabulary...')
         characters = self._get_characters(words)
         filtered_characters = self._filter_characters(characters)
@@ -104,7 +109,7 @@ class PickyBPETrainer:
     def _validate_pair(pair: np.ndarray) -> bool:
         return not any(token.special for token in pair)
 
-    def _encode_words(self, words: list[Word]) -> None:
+    def _encode_words(self, words: list[Word]):
         logger.info('Encoding words...')
         for i, word in enumerate(words):
             word.encode(self.str2token)
@@ -233,20 +238,19 @@ class PickyBPETrainer:
         actual_freq = self._merge_token_in_words(new_token, pair, pairs)
         return actual_freq
 
-    def _dump(self, file: Union[Path, str]) -> None:
+    def _dump(self, file: Union[Path, str]):
         logger.info(f'Dumping model to {file}...')
-        assigned_ids = sorted(self.id2token.keys())
-        id_mapping = dict()
-        id_counter = 0
-        for i in assigned_ids:
-            if self.id2token[i].present:
-                id_mapping[i] = id_counter
-                id_counter += 1
+        vocab_to_embedding = dict()
+        embedding_idx = 0
+        for vocab_id in sorted(self.id2token.keys()):
+            if self.id2token[vocab_id].present:
+                vocab_to_embedding[vocab_id] = embedding_idx
+                embedding_idx += 1
         with open(file, "w", encoding="utf-8") as f:
             json.dump({
                 'tokens': [token.to_dict() for token in self.id2token.values()],
-                'id2int': id_mapping,
-                'int2id': {v: k for k, v in id_mapping.items()},
+                'id2int': vocab_to_embedding,
+                'int2id': {v: k for k, v in vocab_to_embedding.items()},
                 'merges': [{
                     'id': i,
                     'pair': [token.to_dict() for token in merge[1]],
