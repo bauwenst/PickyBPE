@@ -12,9 +12,11 @@ logger = logging.getLogger(__name__)
 from .utils import WHITESPACE, UNK, Token, Word
 
 PathLike = Union[str, Path]
+MergeEventIds = dict[tuple[Token, Token], list[int]]
+SplitEventIds = dict[Token, list[int]]
+SplitResults  = dict[int, list[Token]]
 
-
-class PickyBPECore:
+class PickyBPESegmenter:
 
     def __init__(
         self,
@@ -23,9 +25,9 @@ class PickyBPECore:
         id2token: Optional[dict[int, Token]],  # Only used for decoding.
         int2id: Optional[dict[int, str]],      # Only used for decoding.
 
-        merge_map: dict[tuple[Token, Token], list[int]],
-        split_map: dict[Token, list[int]],
-        splits: dict[int, list[Token]],
+        merge_map: MergeEventIds,
+        split_map: SplitEventIds,
+        splits: SplitResults,
 
         events: Optional[list[dict[str, Any]]]  # Only used in the inefficient implementation of encoding.
     ):
@@ -34,14 +36,14 @@ class PickyBPECore:
         self.id2token: dict[int,Token]  = id2token
         self.int2id: dict[int,str]      = int2id
 
-        self.merge_map: dict[tuple[Token,Token],np.ndarray] = {key: np.array(value) for key, value in merge_map.items()}  # Maps a pair of tokens to the event ID that merges them.
-        self.split_map: dict[Token,np.ndarray]              = {key: np.array(value) for key, value in split_map.items()}  # Maps a token to the event ID that removes it.
+        self.merge_map: dict[tuple[Token,Token],np.ndarray] = {key: np.array(value) for key, value in merge_map.items()}  # Maps a pair of tokens to the event IDs that merge them.
+        self.split_map: dict[Token,np.ndarray]              = {key: np.array(value) for key, value in split_map.items()}  # Maps a token to the event IDs that remove it.
         self.splits: dict[int,list[Token]] = splits  # Maps the event ID of a split event to the tokens into which the split happens. The equivalent structure for merges is not needed because we can just concatenate the pair.
 
         self.events: list[dict[str,Any]] = events
 
     @classmethod
-    def from_pretrained(self, pickybpe_model_path: PathLike) -> "PickyBPECore":
+    def from_pretrained(self, pickybpe_model_path: PathLike) -> "PickyBPESegmenter":
         with open(pickybpe_model_path, "r", encoding="utf-8") as f:
             serialised = json.load(f)
 
@@ -54,7 +56,7 @@ class PickyBPECore:
                 freq=token_dict['freq'],
                 special=token_dict['special'],
                 present=token_dict['present'],
-                left=id2token[token_dict['left']]  if token_dict['left']  is not None else None,
+                left =id2token[token_dict['left']]  if token_dict['left']  is not None else None,
                 right=id2token[token_dict['right']] if token_dict['right'] is not None else None,
                 split=[id2token[i] for i in token_dict['split']] if len(token_dict['split']) > 1 else None
             )
@@ -71,7 +73,7 @@ class PickyBPECore:
             split_map[str2token[split['token']['str']]].append(split['id'])
             splits[split['id']] = [str2token[token['str']] for token in split['split']]
 
-        return PickyBPECore(
+        return PickyBPESegmenter(
             id2token=id2token,
             str2token=str2token,
             id2int=serialised['id2int'],
@@ -95,7 +97,7 @@ class PickyBPECore:
             return [self.str2token[word]]
 
         word = Word(0, word)
-        word.encode(self.str2token)
+        word.initialize_tokens(self.str2token)
         for event in self.events:
             pairs = word.pairs
             if 'pair' in event:
@@ -120,7 +122,7 @@ class PickyBPECore:
 
         previous_event = -1
         word = Word(0, word)
-        word.encode(self.str2token)
+        word.initialize_tokens(self.str2token)
         while True:
             pairs = [(pair, self.merge_map[pair][np.searchsorted(self.merge_map[pair], previous_event)])
                      for pair in word.pairs

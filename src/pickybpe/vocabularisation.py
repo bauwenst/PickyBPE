@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Union
+from typing import Union, Iterable, TypeVar
 from enum import Enum
 from pathlib import Path
 
@@ -12,6 +12,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word
+
+
+T = TypeVar("T")
+def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="Processed") -> Iterable[T]:
+    """
+    Log a message each time after iterating over a fixed amount of elements in an iterable.
+    """
+    for i, thing in enumerate(iterable):
+        yield thing
+        if i > 0 and i % step == 0:
+            logger.info(f"{message} {i} {units}.")
 
 
 class EventType(Enum):
@@ -56,31 +67,33 @@ class PickyBPETrainer:
 
         self.events: list[Union[tuple[EventType,Token,list[Token]],tuple[EventType,list[Token],Token]]] = []
 
-    @staticmethod
-    def _get_words(file: str) -> list[Word]:
+    def _count_words_in_file(self, file: str) -> MCounter:
+        counter = MCounter()
+
         logger.info(f'Loading corpus from {file}...')
         start_time = time.time()
-        with open(file) as f:
-            counter = MCounter()
-            for i, line in enumerate(f):
+        num_lines = 0
+        with open(file, "r", encoding="utf-8") as handle:
+            for line in modlog(handle, 500_000, "lines"):
                 counter.update(line.strip('\n').split())
-                if i > 0 and i % 500000 == 0:
-                    logger.info(f'Processed {i} lines.')
-            num_lines = i
+                num_lines += 1
 
         logger.info(f'Loaded {len(counter)} unique words from {num_lines} sentences in {time.time() - start_time:.2f}s.')
-        return [Word(i, WHITESPACE + word, freq) for i, (word, freq) in enumerate(counter.items())]
-
-    @staticmethod
-    def _get_characters(words: list[Word]) -> MCounter:
-        counter = MCounter()
-        for i, word in enumerate(words):
-            counter.update(MCounter(word.str) * word.freq)
-            if i > 0 and i % 500000 == 0:
-                logger.info(f'Processed {i} words.')
         return counter
 
-    def _filter_characters(self, characters: MCounter) -> MCounter:
+    def _string_to_atoms(self, word: str) -> Iterable[str]:
+        return WHITESPACE + word
+
+    def _pretokens_to_objects(self, pretoken_counts: MCounter) -> list[Word]:
+        return [Word(i, self._string_to_atoms(pretoken), freq) for i, (pretoken, freq) in enumerate(pretoken_counts.items())]
+
+    def _count_atoms(self, words: list[Word]) -> MCounter:
+        counter = MCounter()
+        for word in modlog(words, 500_000, "words"):
+            counter.update(MCounter(word.atoms) * word.freq)
+        return counter
+
+    def _filter_atoms(self, characters: MCounter) -> MCounter:
         if self.coverage < 1:
             corpus_size = sum(characters.values())
             freq_to_remove = corpus_size - round(self.coverage * corpus_size)
@@ -95,13 +108,13 @@ class PickyBPETrainer:
 
     def _initialize_vocab(self, words: list[Word]):
         logger.info('Initializing the vocabulary...')
-        characters = self._get_characters(words)
-        filtered_characters = self._filter_characters(characters)
+        filtered_characters = self._filter_atoms(self._count_atoms(words))
         for i, character in enumerate(filtered_characters):
             token = Token(self.new_id + i, character, filtered_characters[character])
-            self.id2token[token.id] = token
+            self.id2token[token.id]   = token
             self.str2token[token.str] = token
-        self.new_id += len(filtered_characters)
+
+        self.new_id            += len(filtered_characters)
         self.actual_vocab_size += len(filtered_characters)
         logger.info(f'Initialized vocabulary with {len(filtered_characters)} unique characters.')
 
@@ -110,19 +123,16 @@ class PickyBPETrainer:
         return not any(token.special for token in pair)
 
     def _encode_words(self, words: list[Word]):
-        logger.info('Encoding words...')
-        for i, word in enumerate(words):
-            word.encode(self.str2token)
-            if i > 0 and i % 500000 == 0:
-                logger.info(f'Processed {i} words.')
+        logger.info("Encoding words...")
+        for word in modlog(words, 500_000, "words"):
+            word.initialize_tokens(self.str2token)  # Stores the resulting tokenisation in-place, and links each token to the words that contain it.
 
     def _initialize_pairs(self, words: list[Word]) -> MCounter:
         pairs = MCounter()
-        logger.info('Counting character pairs...')
-        for i, word in enumerate(words):
+        logger.info("Counting character pairs...")
+        for word in modlog(words, 500_000, "words"):
             pairs.update(word.pairs)
-            if i > 0 and i % 500000 == 0:
-                logger.info(f'Processed {i} words.')
+
         to_remove = set()
         for pair in pairs:
             if not self._validate_pair(pair):
@@ -184,6 +194,7 @@ class PickyBPETrainer:
         return False
 
     def _merge_token_in_words(self, token_to_merge: Token, pair_to_merge: tuple[Token, Token], pairs: MCounter) -> int:
+        # Find how many times the pair appears, and where.
         actual_freq = 0
         pairs_for_update = MCounter()
         for word in pair_to_merge[0].words & pair_to_merge[1].words:
@@ -195,28 +206,20 @@ class PickyBPETrainer:
                 )
         self._update_pairs_on_merge(token_to_merge, pair_to_merge, pairs_for_update, pairs)
         token_to_merge.freq += actual_freq
-        if pair_to_merge[0] is pair_to_merge[1]:
-            pair_to_merge[0].freq -= 2 * actual_freq
-            removed = self._remove_if_possible(pair_to_merge[0], actual_freq, pairs)
-            if removed:
-                logger.info(
-                    f'Removed token {pair_to_merge[0].str} with frequency {pair_to_merge[0].freq} '
-                    f'after merging into {token_to_merge.str} with frequency {token_to_merge.freq}.'
-                )
-                self.events.append((EventType.SPLIT, pair_to_merge[0], pair_to_merge[0].walk()))
-        else:
-            for token in pair_to_merge:
-                if not token.present:
-                    raise ValueError(f'Token {token} is not present in the vocabulary.')
-                token.freq -= actual_freq
-                token_freq = token.freq
-                removed = self._remove_if_possible(token, actual_freq, pairs)
-                if removed:
-                    logger.info(
-                        f'Removed token {token.str} with frequency {token_freq} '
-                        f'after merging into {token_to_merge.str} with frequency {token_to_merge.freq}.'
-                    )
-                    self.events.append((EventType.SPLIT, token, token.walk()))
+
+        # Update the tokens being merged, and possibly PickyBPE them.
+        for token in set(pair_to_merge):
+            if not token.present:
+                raise ValueError(f'Token {token} is not present in the vocabulary.')
+            token.freq -= actual_freq * pair_to_merge.count(token)
+
+            # PickyBPE
+            remaining_token_freq = token.freq
+            removed = self._remove_if_possible(token, actual_freq, pairs)
+            if removed:  # token.freq == 0
+                logger.info(f'Removed token {token.str} with frequency {remaining_token_freq} after merging into {token_to_merge.str} with frequency {token_to_merge.freq}.')
+                self.events.append((EventType.SPLIT, token, token.walk()))
+
         return actual_freq
 
     def _merge_pair(self, pair: tuple[Token, Token], pairs: MCounter) -> int:
@@ -235,8 +238,7 @@ class PickyBPETrainer:
             self.str2token[new_token.str] = new_token
             self.new_id += 1
         self.events.append((EventType.MERGE, pair, new_token))
-        actual_freq = self._merge_token_in_words(new_token, pair, pairs)
-        return actual_freq
+        return self._merge_token_in_words(new_token, pair, pairs)
 
     def _dump(self, file: Union[Path, str]):
         logger.info(f'Dumping model to {file}...')
@@ -263,20 +265,22 @@ class PickyBPETrainer:
                 } for i, merge in enumerate(self.events) if merge[0] == EventType.SPLIT],
             }, f, indent=4)
 
-    def fit(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int = 200) -> Path:
-        words = self._get_words(input_file)
+    def _fit_from_objects(self, words: list[Word], output_path: Union[Path, str], logging_step: int) -> Path:
         self._initialize_vocab(words)
         self._encode_words(words)
         pairs = self._initialize_pairs(words)
         merge_time = []
         while self.actual_vocab_size < self.desired_vocab_size:
             start_time = time.time()
+
             pair, count = pairs.most_common(1)[0]
             if count <= 0:
                 logger.info(f'No more pairs to merge. Stopping with vocab size of {self.actual_vocab_size}.')
                 break
+
             freq = self._merge_pair(pair, pairs)
             self.actual_vocab_size += 1
+
             merge_time.append(time.time() - start_time)
             if self.actual_vocab_size % logging_step == 0:
                 logger.info(
@@ -285,5 +289,12 @@ class PickyBPETrainer:
                     f'Average merge time {np.mean(merge_time):.2f}s.'
                 )
                 merge_time = []
-        self._dump(model_file)
-        return Path(model_file).resolve()
+
+        self._dump(output_path)
+        return Path(output_path).resolve()
+
+    def _fit_from_counts(self, pretoken_counts: MCounter, output_path: Union[Path, str], logging_step: int) -> Path:
+        return self._fit_from_objects(self._pretokens_to_objects(pretoken_counts), output_path, logging_step)
+
+    def fit_from_file(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int=200) -> Path:
+        return self._fit_from_counts(self._count_words_in_file(input_file), model_file, logging_step)

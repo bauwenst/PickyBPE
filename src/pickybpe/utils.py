@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Iterable
 from collections import Counter
 
 
@@ -12,7 +12,7 @@ EOS = '<EOS>'
 
 
 class MCounter(Counter):
-    """This is a slight extention of the ``Collections.Counter`` class
+    """This is a slight extension of the ``Collections.Counter`` class
     to also allow multiplication with integers.
     https://stackoverflow.com/a/74830621"""
 
@@ -93,19 +93,23 @@ class Token:
 
 class Word:
 
-    def __init__(self, id: int, word: str, freq: int = 0):
+    def __init__(self, id: int, atoms: Iterable[str], freq: int = 0):
         self.id = id
-        self.str = word
+        self.atoms = tuple(atoms)
         self.freq = freq
         self.tokens = None
         self.pairs = None
 
-    def __repr__(self) -> str:
-        return f'{self.str} ({self.freq})'
-
-    def encode(self, str2token: dict[str, Token]) -> None:
-        self.tokens = [str2token[c] for c in self.str]
+    def initialize_tokens(self, str2token: dict[str, Token]) -> None:
+        self.tokens = [str2token[c] for c in self.atoms]
         self._recalculate()
+
+    @property
+    def _str(self):
+        return "".join(self.atoms)
+
+    def __repr__(self) -> str:
+        return f"{self._str} ({self.freq})"
 
     def _recalculate(self, update_tokens: bool = True) -> None:
         self.pairs = MCounter(zip(self.tokens[:-1], self.tokens[1:])) * self.freq
