@@ -153,6 +153,10 @@ class Word:
 
 class PairCounts(ABC):
     @abstractmethod
+    def has(self, pair: Pair) -> bool:
+        pass
+
+    @abstractmethod
     def get(self, pair: Pair) -> int:
         pass
 
@@ -188,6 +192,9 @@ class PairMCounter(PairCounts):
     def __init__(self):
         self._counts: MCounter[Pair] = MCounter()
         self._argmax: Pair = None  # cache to avoid double computations.
+
+    def has(self, pair: Pair) -> bool:
+        return pair in self._counts
 
     def get_argmax(self) -> tuple[Pair,int]:
         if self._argmax is None:
@@ -233,6 +240,9 @@ class PairHeap(PairCounts):
 
     def __init__(self):
         self._minheap = heapdict()  # Stores negative frequencies.
+
+    def has(self, pair: Pair) -> bool:
+        return pair in self._minheap
 
     def get_argmax(self) -> tuple[Pair,int]:
         pair, negfreq = self._minheap.peekitem()
