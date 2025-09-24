@@ -4,15 +4,14 @@ from typing import Union, Iterable, TypeVar
 from enum import Enum
 from pathlib import Path
 
-from collections import defaultdict
+from collections import defaultdict, Counter
 import numpy as np
 import time
 import json
 import logging
 logger = logging.getLogger(__name__)
 
-from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word
-
+from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PairCounts, PairHeap
 
 T = TypeVar("T")
 def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="Processed") -> Iterable[T]:
@@ -56,7 +55,7 @@ class PickyBPETrainer:
             specials = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
             max_id = max(token.id for token in specials)
         else:
-            specials = []
+            specials = []  # TODO: You probably want an unk though, otherwise character coverage will act up.
             max_id = -1
 
         self.id2token  = {token.id: token  for token in specials}
@@ -67,8 +66,8 @@ class PickyBPETrainer:
 
         self.events: list[Union[tuple[EventType,Token,list[Token]],tuple[EventType,list[Token],Token]]] = []
 
-    def _count_words_in_file(self, file: str) -> MCounter:
-        counter = MCounter()
+    def _count_words_in_file(self, file: str) -> Counter[str]:
+        counter = Counter()
 
         logger.info(f'Loading corpus from {file}...')
         start_time = time.time()
@@ -84,16 +83,16 @@ class PickyBPETrainer:
     def _string_to_atoms(self, word: str) -> Iterable[str]:
         return WHITESPACE + word
 
-    def _pretokens_to_objects(self, pretoken_counts: MCounter) -> list[Word]:
+    def _pretokens_to_objects(self, pretoken_counts: Counter[str]) -> list[Word]:
         return [Word(i, self._string_to_atoms(pretoken), freq) for i, (pretoken, freq) in enumerate(pretoken_counts.items())]
 
-    def _count_atoms(self, words: list[Word]) -> MCounter:
+    def _count_atoms(self, words: list[Word]) -> Counter[str]:
         counter = MCounter()
         for word in modlog(words, 500_000, "words"):
             counter.update(MCounter(word.atoms) * word.freq)
         return counter
 
-    def _filter_atoms(self, characters: MCounter) -> MCounter:
+    def _filter_atoms(self, characters: Counter[str]) -> Counter[str]:
         if self.coverage < 1:
             corpus_size = sum(characters.values())
             freq_to_remove = corpus_size - round(self.coverage * corpus_size)
@@ -119,7 +118,7 @@ class PickyBPETrainer:
         logger.info(f'Initialized vocabulary with {len(filtered_characters)} unique characters.')
 
     @staticmethod
-    def _validate_pair(pair: np.ndarray) -> bool:
+    def _validate_pair(pair: Iterable[Token]) -> bool:
         return not any(token.special for token in pair)
 
     def _encode_words(self, words: list[Word]):
@@ -127,11 +126,11 @@ class PickyBPETrainer:
         for word in modlog(words, 500_000, "words"):
             word.initialize_tokens(self.str2token)  # Stores the resulting tokenisation in-place, and links each token to the words that contain it.
 
-    def _initialize_pairs(self, words: list[Word]) -> MCounter:
-        pairs = MCounter()
+    def _initialize_pairs(self, words: list[Word]) -> PairCounts:
+        pairs = PairHeap()
         logger.info("Counting character pairs...")
         for word in modlog(words, 500_000, "words"):
-            pairs.update(word.pairs)
+            pairs.increment_many(word.pairs)
 
         to_remove = set()
         for pair in pairs:
@@ -142,37 +141,38 @@ class PickyBPETrainer:
         return pairs
 
     @staticmethod
-    def _update_pairs_on_merge(new_token: Token, pair: tuple[Token, Token], pairs_for_update: MCounter, pairs: MCounter):
-        pairs.update(pairs_for_update)
+    def _update_pairs_on_merge(new_token: Token, pair: tuple[Token, Token], pairs_for_update: Counter, pairs: PairCounts):
+        for p, freq in pairs_for_update.items():
+            pairs.increment(p, freq)
         for p, freq in pairs_for_update.items():
             if new_token not in p:
                 raise ValueError(f'Pair {p} does not contain the new token {new_token}.')
             if new_token is p[0]:
                 if new_token is p[1]:
-                    to_update = (pair[1], pair[0])
+                    pair_to_update = (pair[1], pair[0])
                 else:
-                    to_update = (pair[1], p[1])
+                    pair_to_update = (pair[1], p[1])
             else:
-                to_update = (p[0], pair[0])
-            if to_update in pairs:
-                pairs[to_update] -= freq
-                if pairs[to_update] <= 0:
-                    pairs.pop(to_update)
+                pair_to_update = (p[0], pair[0])
+            if pair_to_update in pairs:
+                new_freq = pairs.decrement(pair_to_update, freq)
+                if new_freq <= 0:
+                    pairs.pop(pair_to_update)
 
     @staticmethod
-    def _update_pairs_on_remove(token: Token, split: list[Token], pairs_for_update: MCounter, pairs: MCounter):
+    def _update_pairs_on_remove(token: Token, split: list[Token], pairs_for_update: MCounter, pairs: PairCounts):
         for pair, freq in pairs_for_update.items():
             if token is pair[0]:
                 if token is pair[1]:
-                    to_update = (split[-1], split[0])
+                    pair_to_update = (split[-1], split[0])
                 else:
-                    to_update = (split[-1], pair[1])
+                    pair_to_update = (split[-1], pair[1])
             else:
-                to_update = (pair[0], split[0])
-            pairs[to_update] += freq
+                pair_to_update = (pair[0], split[0])
+            pairs.increment(pair_to_update, freq)
             pairs.pop(pair)
 
-    def _remove_if_possible(self, token: Token, merged_freq: int, pairs: MCounter) -> bool:
+    def _remove_if_possible(self, token: Token, merged_freq: int, pairs: PairCounts) -> bool:
         if merged_freq / (token.freq + merged_freq) > self.threshold:
             split = token.split_if_possible()
             if split is not None:
@@ -180,30 +180,27 @@ class PickyBPETrainer:
                 for t in split:
                     t.freq += token.freq
                 for pair in zip(split[:-1], split[1:]):
-                    pairs[pair] += token.freq
+                    pairs.increment(pair, token.freq)
                 pairs_for_update = MCounter()
                 for word in token.words:
                     if token not in word.tokens:
                         raise ValueError(f'Token {token} not found in the token list {word.tokens} of word {word}.')
-                    pairs_for_update.update({pair: freq for pair, freq in word.pairs.items() if
-                                            self._validate_pair(pair) and token in pair})
+                    pairs_for_update.update({pair: freq for pair, freq in word.pairs.items() if self._validate_pair(pair) and token in pair})
                     word.split_token(token, split)
                 self._update_pairs_on_remove(token, split, pairs_for_update, pairs)
                 token.remove()
                 return True
         return False
 
-    def _merge_token_in_words(self, token_to_merge: Token, pair_to_merge: tuple[Token, Token], pairs: MCounter) -> int:
+    def _merge_token_in_words(self, token_to_merge: Token, pair_to_merge: tuple[Token, Token], pairs: PairCounts) -> int:
         # Find how many times the pair appears, and where.
         actual_freq = 0
-        pairs_for_update = MCounter()
+        pairs_for_update = Counter()
         for word in pair_to_merge[0].words & pair_to_merge[1].words:
             if pair_to_merge in word.pairs:
                 word.pairs.pop(pair_to_merge)
                 actual_freq += word.merge_pair(pair_to_merge, token_to_merge)
-                pairs_for_update.update(
-                    {p: f for p, f in word.pairs.items() if self._validate_pair(p) and token_to_merge in p}
-                )
+                pairs_for_update.update({p: f for p, f in word.pairs.items() if self._validate_pair(p) and token_to_merge in p})
         self._update_pairs_on_merge(token_to_merge, pair_to_merge, pairs_for_update, pairs)
         token_to_merge.freq += actual_freq
 
@@ -222,8 +219,7 @@ class PickyBPETrainer:
 
         return actual_freq
 
-    def _merge_pair(self, pair: tuple[Token, Token], pairs: MCounter) -> int:
-        pairs.pop(pair)
+    def _merge_pair(self, pair: tuple[Token, Token], pairs: PairCounts) -> int:
         merged_str = pair[0].str + pair[1].str
         if merged_str in self.str2token:
             new_token = self.str2token[merged_str]
@@ -234,7 +230,7 @@ class PickyBPETrainer:
                 logger.info(f'Additional merges for {new_token.str}.')
         else:
             new_token = Token(self.new_id, merged_str, 0, left=pair[0], right=pair[1])
-            self.id2token[new_token.id] = new_token
+            self.id2token[new_token.id]   = new_token
             self.str2token[new_token.str] = new_token
             self.new_id += 1
         self.events.append((EventType.MERGE, pair, new_token))
@@ -273,7 +269,7 @@ class PickyBPETrainer:
         while self.actual_vocab_size < self.desired_vocab_size:
             start_time = time.time()
 
-            pair, count = pairs.most_common(1)[0]
+            pair, count = pairs.pop_argmax()
             if count <= 0:
                 logger.info(f'No more pairs to merge. Stopping with vocab size of {self.actual_vocab_size}.')
                 break
@@ -293,7 +289,7 @@ class PickyBPETrainer:
         self._dump(output_path)
         return Path(output_path).resolve()
 
-    def _fit_from_counts(self, pretoken_counts: MCounter, output_path: Union[Path, str], logging_step: int) -> Path:
+    def _fit_from_counts(self, pretoken_counts: Counter[str], output_path: Union[Path, str], logging_step: int) -> Path:
         return self._fit_from_objects(self._pretokens_to_objects(pretoken_counts), output_path, logging_step)
 
     def fit_from_file(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int=200) -> Path:

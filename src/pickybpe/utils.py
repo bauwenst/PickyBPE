@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Optional, Iterable
-from collections import Counter
+from typing import Optional, Iterable, TypeVar
+from abc import ABC, abstractmethod
 
+from collections import Counter
+from heapdict import heapdict
 
 WHITESPACE = '▁'
 PAD = '<PAD>'
@@ -10,8 +12,8 @@ UNK = '<UNK>'
 BOS = '<BOS>'
 EOS = '<EOS>'
 
-
-class MCounter(Counter):
+T = TypeVar("T")
+class MCounter(Counter[T]):
     """This is a slight extension of the ``Collections.Counter`` class
     to also allow multiplication with integers.
     https://stackoverflow.com/a/74830621"""
@@ -91,14 +93,17 @@ class Token:
         }
 
 
+Pair = tuple[Token, Token]
+
+
 class Word:
 
     def __init__(self, id: int, atoms: Iterable[str], freq: int = 0):
         self.id = id
         self.atoms = tuple(atoms)
         self.freq = freq
-        self.tokens = None
-        self.pairs = None
+        self.tokens: list[Token] = None
+        self.pairs: MCounter[Pair] = None
 
     def initialize_tokens(self, str2token: dict[str, Token]) -> None:
         self.tokens = [str2token[c] for c in self.atoms]
@@ -117,7 +122,7 @@ class Word:
             for token in self.tokens:
                 token.words.add(self)
 
-    def merge_pair(self, pair: tuple[Token, Token], new_token: Token, update_tokens: bool = True) -> int:
+    def merge_pair(self, pair: Pair, new_token: Token, update_tokens: bool = True) -> int:
         new_tokens = []
         i = 0
         while i < len(self.tokens):
@@ -144,3 +149,108 @@ class Word:
                 new_tokens.append(t)
         self.tokens = new_tokens
         self._recalculate(update_tokens=update_tokens)
+
+
+class PairCounts(ABC):
+    @abstractmethod
+    def get(self, pair: Pair) -> int:
+        pass
+
+    @abstractmethod
+    def pop(self, pair: Pair) -> int:
+        pass
+
+    @abstractmethod
+    def get_argmax(self) -> tuple[Pair,int]:
+        pass
+
+    @abstractmethod
+    def pop_argmax(self) -> tuple[Pair,int]:
+        pass
+
+    @abstractmethod
+    def increment(self, pair: Pair, delta: int=1) -> int:
+        pass
+
+    def decrement(self, pair: Pair, delta: int=1) -> int:
+        return self.increment(pair, -delta)
+
+    def increment_many(self, pairs: Iterable[Pair]):
+        for pair in pairs:
+            self.increment(pair)
+
+    @abstractmethod
+    def __iter__(self) -> Iterable[Pair]:
+        pass
+
+
+class PairMCounter(PairCounts):
+    def __init__(self):
+        self._counts: MCounter[Pair] = MCounter()
+        self._argmax: Pair = None  # cache to avoid double computations.
+
+    def get_argmax(self) -> tuple[Pair,int]:
+        if self._argmax is None:
+            self._argmax = max(self._counts.keys(), key=self._counts.get)
+        return self._argmax, self._counts[self._argmax]
+
+    def pop_argmax(self) -> tuple[Pair,int]:
+        pair, freq = self.get_argmax()
+        self.pop(pair)
+        return pair, freq
+
+    def pop(self, pair: Pair) -> int:
+        f = self._counts.pop(pair)
+        if self._argmax == pair:
+            self._argmax = None
+        return f
+
+    def get(self, pair: Pair) -> int:
+        return self._counts.get(pair)
+
+    def increment(self, pair: Pair, delta: int=1) -> int:
+        self._counts[pair] += delta
+        if delta > 0:
+            self._try_replace_argmax(pair)
+        return self._counts[pair]
+
+    def increment_many(self, pairs: Iterable[Pair]):
+        self._counts.update(pairs)
+        for pair in pairs:
+            self._try_replace_argmax(pair)
+
+    def _try_replace_argmax(self, pair: Pair):
+        if self._argmax is None:
+            return  # We don't want to do any argmax-related computations unless the user asks for it. If the argmax is unknown, that means either we compute it here now and do a bunch updates on it, or we do a bunch of updates and then compute it.
+        if self._argmax != pair and self.get(pair) > self.get(self._argmax):
+            self._argmax = pair
+
+    def __iter__(self) -> Iterable[Pair]:
+        return self._counts.keys()
+
+
+class PairHeap(PairCounts):
+
+    def __init__(self):
+        self._minheap = heapdict()  # Stores negative frequencies.
+
+    def get_argmax(self) -> tuple[Pair,int]:
+        pair, negfreq = self._minheap.peekitem()
+        return pair, -negfreq
+
+    def pop_argmax(self) -> tuple[Pair,int]:
+        pair, negfreq = self._minheap.popitem()
+        return pair, -negfreq
+
+    def get(self, pair: Pair) -> int:
+        return -self._minheap.get(pair)
+
+    def pop(self, pair: Pair) -> int:
+        return -self._minheap.pop(pair)
+
+    def increment(self, pair: Pair, delta: int=1) -> int:
+        self._minheap[pair] -= delta
+        return -self._minheap[pair]
+
+    def __iter__(self) -> Iterable[Pair]:
+        return iter(self._minheap)
