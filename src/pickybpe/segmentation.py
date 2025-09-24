@@ -9,12 +9,12 @@ from functools import lru_cache
 import logging
 logger = logging.getLogger(__name__)
 
-from .utils import WHITESPACE, UNK, Token, Word
+from .utils import WHITESPACE, UNK, Token, Word, PathLike
 
-PathLike = Union[str, Path]
 MergeEventIds = dict[tuple[Token, Token], list[int]]
 SplitEventIds = dict[Token, list[int]]
 SplitResults  = dict[int, list[Token]]
+
 
 class PickyBPESegmenter:
 

@@ -11,7 +11,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 
-from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PairCounts, PairHeap
+from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PairCounts, PairHeap, PathLike
 
 T = TypeVar("T")
 def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="Processed") -> Iterable[T]:
@@ -29,13 +29,12 @@ class EventType(Enum):
     SPLIT = 1
 
 
-class PickyBPETrainer:
+class BPETrainer:
 
     def __init__(
         self,
         vocab_size: int,
         character_coverage: float = 0.9999,
-        picky_threshold: float = 0.9999,
 
         include_specials: bool = True,
         pad_id: int = 0,
@@ -45,7 +44,6 @@ class PickyBPETrainer:
     ):
         self.desired_vocab_size = vocab_size
         self.coverage: float = character_coverage
-        self.threshold: float = picky_threshold
 
         if include_specials:
             self.pad_token = Token(pad_id, PAD, 0, special=True)
@@ -166,38 +164,8 @@ class PickyBPETrainer:
                 if new_freq <= 0:
                     pairs.pop(pair_to_update)
 
-    @staticmethod
-    def _update_pairs_on_remove(token: Token, split: list[Token], pairs_for_update: MCounter, pairs: PairCounts):
-        for pair, freq in pairs_for_update.items():
-            if token is pair[0]:
-                if token is pair[1]:
-                    pair_to_update = (split[-1], split[0])
-                else:
-                    pair_to_update = (split[-1], pair[1])
-            else:
-                pair_to_update = (pair[0], split[0])
-            pairs.increment(pair_to_update, freq)
-            pairs.pop(pair)
-
-    def _remove_if_possible(self, token: Token, merged_freq: int, pairs: PairCounts) -> bool:
-        if merged_freq / (token.freq + merged_freq) > self.threshold:
-            split = token.split_if_possible()
-            if split is not None:
-                self.actual_vocab_size -= 1
-                for t in split:
-                    t.freq += token.freq
-                for pair in zip(split[:-1], split[1:]):
-                    pairs.increment(pair, token.freq)
-                pairs_for_update = MCounter()
-                for word in token.words:
-                    if token not in word.tokens:
-                        raise ValueError(f'Token {token} not found in the token list {word.tokens} of word {word}.')
-                    pairs_for_update.update({pair: freq for pair, freq in word.pairs.items() if self._validate_pair(pair) and token in pair})
-                    word.split_token(token, split)
-                self._update_pairs_on_remove(token, split, pairs_for_update, pairs)
-                token.remove()
-                return True
-        return False
+    def _scrutinize_parent_after_merge(self, parent: Token, child: Token, pair_frequency: int, pairs: PairCounts):
+        pass
 
     def _merge_token_in_words(self, new_token: Token, pair_to_merge: tuple[Token, Token], pairs: PairCounts) -> int:
         # Update the words where the pair appears, and collect new pairs formed.
@@ -220,16 +188,9 @@ class PickyBPETrainer:
             token.freq -= actual_freq * pair_to_merge.count(token)
 
             # PickyBPE/ScaffoldBPE
-            self._scrutinize_parent_after_merge(token, actual_freq, pairs)
+            self._scrutinize_parent_after_merge(token, new_token, actual_freq, pairs)
 
         return actual_freq
-
-    def _scrutinize_parent_after_merge(self, parent: Token, pair_frequency: int, pairs: PairCounts):
-        remaining_token_freq = parent.freq
-        removed = self._remove_if_possible(parent, pair_frequency, pairs)
-        if removed:  # Also means parent.freq == 0 due to the previous line.
-            logger.info(f'Removed token {parent.str} with frequency {remaining_token_freq} after merging into {parent.str} with frequency {parent.freq}.')
-            self.events.append((EventType.SPLIT, parent, parent.walk()))
 
     def _merge_pair(self, pair: tuple[Token, Token], pairs: PairCounts) -> int:
         merged_str = pair[0].str + pair[1].str
@@ -247,13 +208,15 @@ class PickyBPETrainer:
         self.events.append((EventType.MERGE, pair, new_token))
         return self._merge_token_in_words(new_token, pair, pairs)
 
-    def _dump(self, file: Union[Path, str]):
-        logger.info(f'Dumping model to {file}...')
+    def _dump(self, path: PathLike):
+        if path.is_dir():
+            path = path / "tokenizer.json"
+        logger.info(f'Dumping model to {path.as_posix()}...')
 
         sorted_tokens = sorted(self.str2token.values(), key=lambda token: token.id)
         vocab_to_embedding = {token.id: idx for idx, token in enumerate(filter(lambda token: token.present, sorted_tokens))}
 
-        with open(file, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump({
                 'tokens': [token.to_dict() for token in sorted_tokens],
                 'id2int': vocab_to_embedding,
@@ -303,3 +266,70 @@ class PickyBPETrainer:
 
     def fit_from_file(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int=200) -> Path:
         return self._fit_from_counts(self._count_words_in_file(input_file), model_file, logging_step)
+
+
+class PickyBPETrainer(BPETrainer):
+
+    def __init__(
+        self,
+        vocab_size: int,
+        character_coverage: float = 0.9999,
+        picky_threshold: float = 0.9999,
+
+        include_specials: bool = True,
+        pad_id: int = 0,
+        unk_id: int = 1,
+        bos_id: int = 2,
+        eos_id: int = 3,
+    ):
+        super().__init__(
+            vocab_size=vocab_size,
+            character_coverage=character_coverage,
+            include_specials=include_specials,
+
+            pad_id=pad_id,
+            unk_id=unk_id,
+            bos_id=bos_id,
+            eos_id=eos_id
+        )
+        self._threshold = picky_threshold
+
+    @staticmethod
+    def _update_pairs_on_remove(token: Token, split: list[Token], pairs_for_update: MCounter, pairs: PairCounts):
+        for pair, freq in pairs_for_update.items():
+            if token is pair[0]:
+                if token is pair[1]:
+                    pair_to_update = (split[-1], split[0])
+                else:
+                    pair_to_update = (split[-1], pair[1])
+            else:
+                pair_to_update = (pair[0], split[0])
+            pairs.increment(pair_to_update, freq)
+            pairs.pop(pair)
+
+    def _remove_if_possible(self, token: Token, merged_freq: int, pairs: PairCounts) -> bool:
+        if merged_freq / (token.freq + merged_freq) > self._threshold:
+            split = token.split_if_possible()
+            if split is not None:
+                self.actual_vocab_size -= 1
+                for t in split:
+                    t.freq += token.freq
+                for pair in zip(split[:-1], split[1:]):
+                    pairs.increment(pair, token.freq)
+                pairs_for_update = MCounter()
+                for word in token.words:
+                    if token not in word.tokens:
+                        raise ValueError(f'Token {token} not found in the token list {word.tokens} of word {word}.')
+                    pairs_for_update.update({pair: freq for pair, freq in word.pairs.items() if self._validate_pair(pair) and token in pair})
+                    word.split_token(token, split)
+                self._update_pairs_on_remove(token, split, pairs_for_update, pairs)
+                token.remove()
+                return True
+        return False
+
+    def _scrutinize_parent_after_merge(self, parent: Token, child: Token, pair_frequency: int, pairs: PairCounts):
+        remaining_token_freq = parent.freq
+        removed = self._remove_if_possible(parent, child.freq, pairs)
+        if removed:  # Also means parent.freq == 0 due to the previous line.
+            logger.info(f'Removed token {parent.str} with frequency {remaining_token_freq} after merging into {child.str} with frequency {child.freq} (merge frequency {pair_frequency}).')
+            self.events.append((EventType.SPLIT, parent, parent.walk()))

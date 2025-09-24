@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional, Iterable, TypeVar
+from typing import Optional, Iterable, TypeVar, Union
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from collections import Counter
 from heapdict import heapdict
@@ -11,6 +12,8 @@ PAD = '<PAD>'
 UNK = '<UNK>'
 BOS = '<BOS>'
 EOS = '<EOS>'
+
+PathLike = Union[str, Path]
 
 T = TypeVar("T")
 class MCounter(Counter[T]):
