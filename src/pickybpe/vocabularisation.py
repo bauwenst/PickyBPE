@@ -34,6 +34,7 @@ class BPETrainer:
     def __init__(
         self,
         vocab_size: int,
+        max_type_length: int = 64,
         character_coverage: float = 0.9999,
 
         include_specials: bool = True,
@@ -44,6 +45,7 @@ class BPETrainer:
     ):
         self.desired_vocab_size = vocab_size
         self.coverage: float = character_coverage
+        self.max_type_length = max_type_length
 
         if include_specials:
             self.pad_token = Token(pad_id, PAD, 0, special=True)
@@ -113,9 +115,8 @@ class BPETrainer:
         self.actual_vocab_size += len(filtered_characters)
         logger.info(f'Initialized vocabulary with {len(filtered_characters)} unique characters.')
 
-    @staticmethod
-    def _validate_pair(pair: Iterable[Token]) -> bool:
-        return not any(token.special for token in pair)
+    def _validate_pair(self, pair: Iterable[Token]) -> bool:
+        return not any(token.special for token in pair) and sum(len(token.str) for token in pair) <= self.max_type_length
 
     def _encode_words(self, words: list[Word]):
         logger.info("Encoding words...")
@@ -273,6 +274,7 @@ class PickyBPETrainer(BPETrainer):
     def __init__(
         self,
         vocab_size: int,
+        max_type_length: int = 64,
         character_coverage: float = 0.9999,
         picky_threshold: float = 0.9999,
 
@@ -284,6 +286,7 @@ class PickyBPETrainer(BPETrainer):
     ):
         super().__init__(
             vocab_size=vocab_size,
+            max_type_length=max_type_length,
             character_coverage=character_coverage,
             include_specials=include_specials,
 
