@@ -227,7 +227,7 @@ class PairMCounter(PairCounts):
             self._argmax = pair
 
     def __iter__(self) -> Iterable[Pair]:
-        return self._counts.keys()
+        return iter(self._counts)
 
 
 class PairHeap(PairCounts):

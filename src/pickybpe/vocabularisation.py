@@ -9,9 +9,10 @@ import numpy as np
 import time
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 
-from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PairCounts, PairHeap, PathLike
+from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PathLike, PairCounts, PairHeap, PairMCounter
 
 T = TypeVar("T")
 def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="Processed") -> Iterable[T]:
@@ -131,7 +132,8 @@ class BPETrainer:
             word.initialize_tokens(self.str2token)  # Stores the resulting tokenisation in-place, and links each token to the words that contain it.
 
     def _initialize_pairs(self, words: list[Word]) -> PairCounts:
-        pairs = PairHeap()
+        pairs = PairHeap()        # Each merge constant-time in |V|, so vocabularisation is O(|V|).
+        # pairs = PairMCounter()  # Each merge linear-time in |V|, so vocabularisation is O(|V|²).
         logger.info("Counting character pairs...")
         for word in modlog(words, 500_000, "words"):
             for pair, freq_in_word_times_freq_of_word in word.pairs.items():
@@ -246,9 +248,9 @@ class BPETrainer:
         self._initialize_vocab(words)
         self._encode_words(words)
         pairs = self._initialize_pairs(words)
-        merge_time = []
+        merge_times = []
         while self.actual_vocab_size < self.desired_vocab_size:
-            start_time = time.time()
+            start_time = time.perf_counter_ns()
 
             pair, count = pairs.pop_argmax()
             if count <= 0:
@@ -258,14 +260,14 @@ class BPETrainer:
             freq = self._merge_pair(pair, pairs)
             self.actual_vocab_size += 1
 
-            merge_time.append(time.time() - start_time)
+            merge_times.append(time.perf_counter_ns() - start_time)
             if self.actual_vocab_size % logging_step == 0:
                 logger.info(
-                    f'VOCABULARY SIZE: {self.actual_vocab_size}. '
-                    f'Merged {pair[0].str} + {pair[1].str} with frequency {freq}. '
-                    f'Average merge time {np.mean(merge_time):.2f}s.'
+                    f'|V| = {self.actual_vocab_size}. '
+                    f'Last {logging_step} merges averaged {sum(merge_times)/(len(merge_times)*1_000_000):.2f}ms. '
+                    f'Just merged {pair[0].str} + {pair[1].str} with frequency {freq}.'
                 )
-                merge_time = []
+                merge_times = []
 
         self._dump(output_path)
         return Path(output_path).resolve()

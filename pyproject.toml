@@ -11,7 +11,8 @@ authors = [
     {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"},
 ]
 maintainers = [
-    {name = "Pavel Chizhov", email = "pavel.chizhov@thws.de"}
+    {name = "Pavel Chizhov", email = "pavel.chizhov@thws.de"},
+    {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"},
 ]
 description = "BPE modification that implements removing intermediate tokens during tokenizer training."
 readme = "README.md"
