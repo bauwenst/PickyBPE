@@ -107,7 +107,7 @@ class BPETrainer:
     def _initialize_vocab(self, words: list[Word]):
         logger.info('Initializing the vocabulary...')
         filtered_characters = self._filter_atoms(self._count_atoms(words))
-        for i, character in enumerate(filtered_characters):
+        for i, character in enumerate(sorted(filtered_characters)):
             token = Token(self.new_id + i, character, filtered_characters[character])
             self.str2token[token.str] = token
 
@@ -127,7 +127,8 @@ class BPETrainer:
         pairs = PairHeap()
         logger.info("Counting character pairs...")
         for word in modlog(words, 500_000, "words"):
-            pairs.increment_many(word.pairs)
+            for pair, freq_in_word_times_freq_of_word in word.pairs.items():
+                pairs.increment(pair, freq_in_word_times_freq_of_word)
 
         to_remove = set()
         for pair in pairs:
@@ -232,7 +233,7 @@ class BPETrainer:
                     'token': merge[1].to_dict(),
                     'split': [token.to_dict() for token in merge[2]]
                 } for i, merge in enumerate(self.events) if merge[0] == EventType.SPLIT],
-            }, f, indent=4)
+            }, f, indent=4, ensure_ascii=False)
 
     def _fit_from_objects(self, words: list[Word], output_path: Union[Path, str], logging_step: int) -> Path:
         self._initialize_vocab(words)

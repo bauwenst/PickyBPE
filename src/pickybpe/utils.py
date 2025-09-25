@@ -182,10 +182,6 @@ class PairCounts(ABC):
     def decrement(self, pair: Pair, delta: int=1) -> int:
         return self.increment(pair, -delta)
 
-    def increment_many(self, pairs: Iterable[Pair]):
-        for pair in pairs:
-            self.increment(pair)
-
     @abstractmethod
     def __iter__(self) -> Iterable[Pair]:
         pass
@@ -224,11 +220,6 @@ class PairMCounter(PairCounts):
             self._try_replace_argmax(pair)
         return self._counts[pair]
 
-    def increment_many(self, pairs: Iterable[Pair]):
-        self._counts.update(pairs)
-        for pair in pairs:
-            self._try_replace_argmax(pair)
-
     def _try_replace_argmax(self, pair: Pair):
         if self._argmax is None:
             return  # We don't want to do any argmax-related computations unless the user asks for it. If the argmax is unknown, that means either we compute it here now and do a bunch updates on it, or we do a bunch of updates and then compute it.
@@ -262,7 +253,10 @@ class PairHeap(PairCounts):
         return -self._minheap.pop(pair)
 
     def increment(self, pair: Pair, delta: int=1) -> int:
-        self._minheap[pair] -= delta
+        try:
+            self._minheap[pair] -= delta
+        except KeyError:
+            self._minheap[pair] = -delta
         return -self._minheap[pair]
 
     def __iter__(self) -> Iterable[Pair]:
