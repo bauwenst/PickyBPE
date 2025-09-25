@@ -36,6 +36,7 @@ class BPETrainer:
         vocab_size: int,
         max_type_length: int = 64,
         character_coverage: float = 0.9999,
+        ensured_vocabulary: Iterable[str] = None,
 
         include_specials: bool = True,
         pad_id: int = 0,
@@ -46,6 +47,7 @@ class BPETrainer:
         self.desired_vocab_size = vocab_size
         self.coverage: float = character_coverage
         self.max_type_length = max_type_length
+        self._ensured_vocabulary = set(ensured_vocabulary or [])
 
         if include_specials:
             self.pad_token = Token(pad_id, PAD, 0, special=True)
@@ -104,9 +106,14 @@ class BPETrainer:
                 logger.info(f'Replaced {num_to_remove} rare characters with UNK.')
         return characters
 
+    def _ensure_atoms(self, characters: Counter[str]) -> Counter[str]:
+        for atom in self._ensured_vocabulary:
+            characters[atom] += 0
+        return characters
+
     def _initialize_vocab(self, words: list[Word]):
         logger.info('Initializing the vocabulary...')
-        filtered_characters = self._filter_atoms(self._count_atoms(words))
+        filtered_characters = self._ensure_atoms(self._filter_atoms(self._count_atoms(words)))
         for i, character in enumerate(sorted(filtered_characters)):
             token = Token(self.new_id + i, character, filtered_characters[character])
             self.str2token[token.str] = token
@@ -275,9 +282,10 @@ class PickyBPETrainer(BPETrainer):
     def __init__(
         self,
         vocab_size: int,
+        picky_threshold: float = 0.9,
         max_type_length: int = 64,
         character_coverage: float = 0.9999,
-        picky_threshold: float = 0.9999,
+        ensured_vocabulary: Iterable[str] = None,
 
         include_specials: bool = True,
         pad_id: int = 0,
@@ -289,6 +297,7 @@ class PickyBPETrainer(BPETrainer):
             vocab_size=vocab_size,
             max_type_length=max_type_length,
             character_coverage=character_coverage,
+            ensured_vocabulary=ensured_vocabulary,
             include_specials=include_specials,
 
             pad_id=pad_id,
