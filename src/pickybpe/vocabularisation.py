@@ -15,14 +15,14 @@ logger = logging.getLogger(__name__)
 from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PathLike, PairCounts, PairHeap, PairMCounter
 
 T = TypeVar("T")
-def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="Processed") -> Iterable[T]:
+def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="\tProcessed") -> Iterable[T]:
     """
     Log a message each time after iterating over a fixed amount of elements in an iterable.
     """
     for i, thing in enumerate(iterable):
         yield thing
         if i > 0 and i % step == 0:
-            logger.info(f"{message} {i} {units}.")
+            logger.info(f"{message} {i:,} {units}.")
 
 
 class EventType(Enum):
@@ -45,21 +45,24 @@ class BPETrainer:
         bos_id: int = 2,
         eos_id: int = 3,
     ):
-        self.desired_vocab_size = vocab_size
         self.coverage: float = character_coverage
         self.max_type_length = max_type_length
         self._ensured_vocabulary = set(ensured_vocabulary or [])
 
         if include_specials:
-            self.pad_token = Token(pad_id, PAD, 0, special=True)
+            self.desired_vocab_size = vocab_size
             self.unk_token = Token(unk_id, UNK, 0, special=True)
+            self.pad_token = Token(pad_id, PAD, 0, special=True)
             self.bos_token = Token(bos_id, BOS, 0, special=True)
             self.eos_token = Token(eos_id, EOS, 0, special=True)
             specials = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
-            max_id = max(token.id for token in specials)
         else:
-            specials = []  # TODO: You probably want an unk though, otherwise character coverage will act up.
-            max_id = -1
+            self.desired_vocab_size = vocab_size + 1  # User said they did not want to include specials. We include a special, so we pay for it.
+            self.unk_token = Token(0, "[UNK]", 0, special=True)  # You need at least a default UNK due to character coverage.
+            specials = [self.unk_token]
+        assert self.unk_token
+
+        max_id = max((token.id for token in specials), default=-1)
 
         self.str2token = {token.str: token for token in specials}
         self.str2token = defaultdict(lambda: self.unk_token, self.str2token)
@@ -99,22 +102,27 @@ class BPETrainer:
             corpus_size = sum(characters.values())
             freq_to_remove = corpus_size - round(self.coverage * corpus_size)
             if freq_to_remove > 0:
-                cum_sum = np.cumsum([freq for _, freq in reversed(characters.most_common())])
+                sorted_counter = characters.most_common()[::-1]  # Sorted low to high.
+                cum_sum = np.cumsum([freq for _, freq in sorted_counter])
                 num_to_remove = np.searchsorted(cum_sum, freq_to_remove)
-                characters_to_remove = [c for c, _ in characters.most_common()[-num_to_remove:]]
-                for c in characters_to_remove:
-                    characters.pop(c)
+                if num_to_remove > 0:
+                    characters = characters.copy()
+                    for c, _ in sorted_counter[:num_to_remove]:
+                        characters.pop(c)
+
                 logger.info(f'Replaced {num_to_remove} rare characters with UNK.')
         return characters
 
     def _ensure_atoms(self, characters: Counter[str]) -> Counter[str]:
+        characters = characters.copy()
         for atom in self._ensured_vocabulary:
             characters[atom] += 0
         return characters
 
     def _initialize_vocab(self, words: list[Word]):
         logger.info('Initializing the vocabulary...')
-        filtered_characters = self._ensure_atoms(self._filter_atoms(self._count_atoms(words)))
+        all_characters: Counter[str]      = self._count_atoms(words)
+        filtered_characters: Counter[str] = self._ensure_atoms(self._filter_atoms(all_characters))
         for i, character in enumerate(sorted(filtered_characters)):
             token = Token(self.new_id + i, character, filtered_characters[character])
             self.str2token[token.str] = token
@@ -122,6 +130,8 @@ class BPETrainer:
         self.new_id            += len(filtered_characters)
         self.actual_vocab_size += len(filtered_characters)
         logger.info(f'Initialized vocabulary with {len(filtered_characters)} unique characters.')
+        logger.info(f"\tIncluded: {''.join(sorted(set(filtered_characters.keys())))}")
+        logger.info(f"\tExcluded: {''.join(sorted(set(all_characters.keys()) - set(filtered_characters.keys())))}")
 
     def _validate_pair(self, pair: Iterable[Token]) -> bool:
         return not any(token.special for token in pair) and sum(len(token.str) for token in pair) <= self.max_type_length
@@ -134,7 +144,7 @@ class BPETrainer:
     def _initialize_pairs(self, words: list[Word]) -> PairCounts:
         pairs = PairHeap()        # Each merge constant-time in |V|, so vocabularisation is O(|V|).
         # pairs = PairMCounter()  # Each merge linear-time in |V|, so vocabularisation is O(|V|²).
-        logger.info("Counting character pairs...")
+        logger.info("Initializing token pairs...")
         for word in modlog(words, 500_000, "words"):
             for pair, freq_in_word_times_freq_of_word in word.pairs.items():
                 pairs.increment(pair, freq_in_word_times_freq_of_word)
