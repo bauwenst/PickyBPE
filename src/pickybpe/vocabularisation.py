@@ -110,13 +110,19 @@ class BPETrainer:
                     for c, _ in sorted_counter[:num_to_remove]:
                         characters.pop(c)
 
-                logger.info(f'Replaced {num_to_remove} rare characters with UNK.')
+                logger.info(f'Removed {num_to_remove} rare characters from the alphabet.')
         return characters
 
     def _ensure_atoms(self, characters: Counter[str]) -> Counter[str]:
         characters = characters.copy()
+        n_added = 0
         for atom in self._ensured_vocabulary:
-            characters[atom] += 0
+            if atom not in characters:
+                characters[atom] += 0
+                n_added += 1
+        if n_added > 0:
+            logger.info(f'Added {n_added} forgotten characters to the alphabet.')
+
         return characters
 
     def _initialize_vocab(self, words: list[Word]):
