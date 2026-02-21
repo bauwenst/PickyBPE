@@ -106,7 +106,7 @@ class Word:
         self.atoms = tuple(atoms)
         self.freq = freq
         self.tokens: list[Token] = None
-        self.pairs: MCounter[Pair] = None
+        self.pairs: MCounter[Pair] = None  # Maps each adjacent pair of tokens to its corpus frequency conditioned on this word. (The amount of times it appears in this word, times self.freq.) No validation is run on these pairs. It is up to the user to decide that a pair is illegal e.g. because one of its members is special or the result of merging the pair would be too long.
 
     def initialize_tokens(self, str2token: dict[str, Token]) -> None:
         self.tokens = [str2token[c] for c in self.atoms]
@@ -119,13 +119,13 @@ class Word:
     def __repr__(self) -> str:
         return f"{self._str} ({self.freq})"
 
-    def _recalculate(self, update_tokens: bool = True) -> None:
+    def _recalculate(self, relink_word_to_tokens: bool=True) -> None:
         self.pairs = MCounter(zip(self.tokens[:-1], self.tokens[1:])) * self.freq
-        if update_tokens:
+        if relink_word_to_tokens:
             for token in self.tokens:
                 token.words.add(self)
 
-    def merge_pair(self, pair: Pair, new_token: Token, update_tokens: bool = True) -> int:
+    def merge_pair(self, pair: Pair, new_token: Token, relink_word_to_tokens: bool=True) -> int:
         new_tokens = []
         i = 0
         while i < len(self.tokens):
@@ -136,22 +136,22 @@ class Word:
                 new_tokens.append(self.tokens[i])
                 i += 1
         new_token_frequency = len(self.tokens) - len(new_tokens)
-        if update_tokens:
+        if relink_word_to_tokens:
             pair[0].words.discard(self)
             pair[1].words.discard(self)
         self.tokens = new_tokens
-        self._recalculate(update_tokens=update_tokens)
+        self._recalculate(relink_word_to_tokens=relink_word_to_tokens)
         return new_token_frequency * self.freq
 
-    def split_token(self, token: Token, split: list[Token], update_tokens: bool = True):
+    def split_token(self, token: Token, subtokens: list[Token], relink_word_to_tokens: bool=True):
         new_tokens = []
         for t in self.tokens:
             if t == token:
-                new_tokens.extend(split)
+                new_tokens.extend(subtokens)
             else:
                 new_tokens.append(t)
         self.tokens = new_tokens
-        self._recalculate(update_tokens=update_tokens)
+        self._recalculate(relink_word_to_tokens=relink_word_to_tokens)
 
 
 class PairCounts(ABC):

@@ -126,7 +126,7 @@ class PickyBPESegmenter:
         while True:
             pairs = [(pair, self.merge_map[pair][np.searchsorted(self.merge_map[pair], previous_event)])
                      for pair in word.pairs
-                     if pair in self.merge_map and np.any(self.merge_map[pair] >= previous_event)]
+                     if pair in self.merge_map and np.any(self.merge_map[pair] >= previous_event)]  # TODO: Can be made 2x as fast since the any() and the searchsorted() do almost the same linear operation (the search is ~N/2, the any is ~N).
             removals = [(token, self.split_map[token][np.searchsorted(self.split_map[token], previous_event)])
                         for token in word.tokens
                         if token in self.split_map and np.any(self.split_map[token] >= previous_event)]
@@ -143,10 +143,10 @@ class PickyBPESegmenter:
                 break
 
             if token_to_remove is None or (pair_to_merge is not None and merge_event_id < split_event_id):
-                word.merge_pair(pair_to_merge, self.str2token[pair_to_merge[0].str + pair_to_merge[1].str], update_tokens=False)
+                word.merge_pair(pair_to_merge, self.str2token[pair_to_merge[0].str + pair_to_merge[1].str], relink_word_to_tokens=False)
                 previous_event = merge_event_id
             else:
-                word.split_token(token_to_remove, self.splits[split_event_id], update_tokens=False)
+                word.split_token(token_to_remove, self.splits[split_event_id], relink_word_to_tokens=False)
                 previous_event = split_event_id
 
         return word.tokens
