@@ -1,4 +1,11 @@
-# Picky BPE
+# BPE and PickyBPE
+
+Python package for object-oriented BPE vocabularisation, with an extension for PickyBPE.
+Used as the preferred BPE vocabulariser in TkTkT. Adapted from Pavel Chizhov's PickyBPE trainer,
+
+---
+
+# Original README
 
 This repository contains a prototype code for the paper "BPE Gets Picky: Efficient Vocabulary Refinement
 During Tokenizer Training", which was presented at EMNLP 2024.
@@ -7,11 +14,11 @@ During Tokenizer Training", which was presented at EMNLP 2024.
 
 ## Training
 
-For training you should use `bpe_trainer.py` script. For example, the following command trains a 
+For training you should use `train.py` script. For example, the following command trains a 
 Picky BPE tokenizer with vocabulary size 8192 and IoS threshold of 0.9.
 
 ```
-$ python bpe_trainer.py --input_file train.txt --model_file model.json --vocab_size 8192 --threshold 0.9
+$ python scripts/train.py --input_file train.txt --model_file model.json --vocab_size 8192 --threshold 0.9
 ```
 
 The complete list of options is:
@@ -32,10 +39,10 @@ Args:
 
 ## Tokenization
 
-To apply the trained Picky BPE model, use the `picky_tokenize.py` script. For example:
+To apply the trained Picky BPE model, use the `segment.py` script. For example:
 
 ```
-$ python picky_tokenize.py --bpe_model model.json --input_file train.txt --output_file train.tok.txt
+$ python scripts/segment.py --bpe_model model.json --input_file train.txt --output_file train.tok.txt
 ```
 
 The complete list of options is:
