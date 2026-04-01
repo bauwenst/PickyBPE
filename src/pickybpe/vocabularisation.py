@@ -32,17 +32,17 @@ class EventType(Enum):
     SPLIT = 1
 
 
-class RawBPEStatistics(PairStatistics[Pair]):
+class RawBPEStatistics(CountingObjective[Pair]):
     """
     Uses the raw BPE counts as argmaxable statistic.
     """
 
     def __init__(self):
-        self._counts = PairHeap()  # Each merge constant-time in |V|, so vocabularisation is O(|V|).
-        # self._counts = PairCounterArgmaxable()  # Each merge results from a linear-time search in |V|, so vocabularisation is O(|V|²).
+        self._counts = MaxHeap()  # Each merge constant-time in |V|, so vocabularisation is O(|V|).
+        # self._counts = FlatCounterArgmaxable()  # Each merge results from a linear-time search in |V|, so vocabularisation is O(|V|²).
 
     @property
-    def counts(self) -> PairScores[Pair]:
+    def counts(self) -> NumericalMapping[Pair]:
         return self._counts
 
     def has(self, pair: Pair) -> bool:
@@ -65,7 +65,7 @@ class BPETrainerState:
     actual_vocab_size: int
     new_id: int
     events: list[Union[tuple[Literal[EventType.SPLIT], Token, Iterable[Token]], tuple[Literal[EventType.MERGE], Iterable[Token], Token]]]
-    pairs: PairStatistics
+    pairs: CountingObjective[Pair]
 
 
 class BPETrainer:
@@ -136,9 +136,9 @@ class BPETrainer:
         return [Word(i, self._string_to_atoms(pretoken), freq) for i, (pretoken, freq) in enumerate(pretoken_counts.items())]
 
     def _count_atoms(self, words: list[Word]) -> Counter[str]:
-        counter = MCounter()
+        counter = MulCounter()
         for word in modlog(words, 500_000, "words"):
-            counter.update(MCounter(word.atoms) * word.freq)
+            counter.update(MulCounter(word.atoms) * word.freq)
         return counter
 
     def _filter_atoms(self, characters: Counter[str]) -> Counter[str]:
@@ -423,7 +423,7 @@ class PickyBPETrainer(BPETrainer):
                         assert not state.pairs.has(pair)
 
                 # Token-external statistics: Every pair that used to exist with the removed token, in every word it appeared in, is now gone, and instead you get pairs with the outermost subtokens.
-                obsolete_pairs = MCounter()
+                obsolete_pairs = MulCounter()
                 for word in token.words:
                     assert token in word.tokens, f"Token {token} not found in the token list {word.tokens} of word {word} despite that word being known to the token!"
                     obsolete_pairs.update({pair: freq for pair, freq in word.pairs.items() if token in pair})  # Note that MCounter.update is accumulative, not substitutive.

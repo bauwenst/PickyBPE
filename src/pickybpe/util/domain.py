@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Iterable, Optional
 
 from .counters import *
 
@@ -80,7 +79,7 @@ class Word:
         self.atoms = tuple(atoms)
         self.freq = freq
         self.tokens: list[Token] = None
-        self.pairs: MCounter[Pair] = None  # Maps each adjacent pair of tokens to its corpus frequency conditioned on this word. (The amount of times it appears in this word, times self.freq.) No validation is run on these pairs. It is up to the user to decide that a pair is illegal e.g. because one of its members is special or the result of merging the pair would be too long.
+        self.pairs: MulCounter[Pair] = None  # Maps each adjacent pair of tokens to its corpus frequency conditioned on this word. (The amount of times it appears in this word, times self.freq.) No validation is run on these pairs. It is up to the user to decide that a pair is illegal e.g. because one of its members is special or the result of merging the pair would be too long.
 
     def initialize_tokens(self, str2token: dict[str, Token]) -> None:
         self.tokens = [str2token[c] for c in self.atoms]
@@ -94,7 +93,7 @@ class Word:
         return f"{self._str} ({self.freq})"
 
     def _recalculate(self, relink_word_to_tokens: bool=True) -> None:
-        self.pairs = MCounter(zip(self.tokens[:-1], self.tokens[1:])) * self.freq
+        self.pairs = MulCounter(zip(self.tokens[:-1], self.tokens[1:])) * self.freq
         if relink_word_to_tokens:
             for token in self.tokens:
                 token.words.add(self)

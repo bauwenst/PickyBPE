@@ -6,7 +6,7 @@ from heapdict import heapdict
 
 
 T = TypeVar("T")
-class MCounter(Counter[T]):
+class MulCounter(Counter[T]):
     """This is a slight extension of the ``Collections.Counter`` class
     to also allow multiplication with integers.
     https://stackoverflow.com/a/74830621"""
@@ -14,41 +14,46 @@ class MCounter(Counter[T]):
     def __mul__(self, other):
         if not isinstance(other, int):
             raise TypeError("Non-int factor")
-        return MCounter({k: other * v for k, v in self.items()})
+        return MulCounter({k: other * v for k, v in self.items()})
 
     def __rmul__(self, other):
         return self * other
 
     def __add__(self, other):
-        return MCounter(super().__add__(other))
+        return MulCounter(super().__add__(other))
 
 
-class PairScores(ABC, Generic[T]):
+class NumericalMapping(ABC, Generic[T]):
+    """
+    Maps things to a number.
+    Basically a dict[T,float] except with extra methods for in/decrements, and without magic methods.
+    """
+
     @abstractmethod
-    def has(self, pair: T) -> bool:
+    def has(self, key: T) -> bool:
         pass
 
     @abstractmethod
-    def get(self, pair: T) -> float:  # Raises when the key is unknown.
+    def get(self, key: T) -> float:  # Raises when the key is unknown.
         pass
 
     @abstractmethod
-    def set(self, pair: T, value: float):
+    def set(self, key: T, value: float):
         pass
 
-    def increment(self, pair: T, delta: float=1) -> float:  # Creates the key if it is unknown.
+    def increment(self, key: T, delta: float=1) -> float:  # Creates the key if it is unknown.
         try:
-            value = self.get(pair) + delta
+            value = self.get(key) + delta
         except KeyError:
             value = delta
-        self.set(pair, value)
+        self.set(key, value)
         return value
 
-    def decrement(self, pair: T, delta: float=1) -> float:
-        return self.increment(pair, -delta)
+    def decrement(self, key: T, delta: float=1) -> float:
+        return self.increment(key, -delta)
 
     @abstractmethod
-    def pop(self, pair: T) -> float:
+    def pop(self, key: T) -> float:
         pass
 
     @abstractmethod
@@ -56,7 +61,7 @@ class PairScores(ABC, Generic[T]):
         pass
 
 
-class PairScoresArgmaxable(PairScores[T]):
+class NumericalMappingArgmaxable(NumericalMapping[T]):
     """A pair collection which is also used for BPE's argmax."""
 
     @abstractmethod
@@ -69,27 +74,27 @@ class PairScoresArgmaxable(PairScores[T]):
         return pair, freq
 
 
-class PairCounter(PairScores[T]):
+class FlatCounter(NumericalMapping[T]):
     def __init__(self):
-        self._counts: MCounter[T] = MCounter()
+        self._counts: MulCounter[T] = MulCounter()
 
-    def has(self, pair: T) -> bool:
-        return pair in self._counts
+    def has(self, key: T) -> bool:
+        return key in self._counts
 
-    def pop(self, pair: T) -> float:
-        return self._counts.pop(pair)
+    def pop(self, key: T) -> float:
+        return self._counts.pop(key)
 
-    def get(self, pair: T) -> float:
-        return self._counts[pair]
+    def get(self, key: T) -> float:
+        return self._counts[key]
 
-    def set(self, pair: T, value: float):
-        self._counts[pair] = value
+    def set(self, key: T, value: float):
+        self._counts[key] = value
 
     def __iter__(self) -> Iterable[T]:
         return iter(self._counts)
 
 
-class PairCounterArgmaxable(PairCounter[T]):
+class FlatCounterArgmaxable(FlatCounter[T]):
     def __init__(self):
         super().__init__()
         self._argmax: T = None  # cache to avoid double computations.
@@ -99,82 +104,82 @@ class PairCounterArgmaxable(PairCounter[T]):
             self._argmax = max(self._counts.keys(), key=self._counts.get)
         return self._argmax, self.get(self._argmax)
 
-    def pop(self, pair: T) -> float:
-        value = super().pop(pair)
-        if self._argmax == pair:
+    def pop(self, key: T) -> float:
+        value = super().pop(key)
+        if self._argmax == key:
             self._argmax = None
         return value
 
-    def set(self, pair: T, value: float):
-        super().set(pair, value)
-        self._try_replace_argmax(pair)
+    def set(self, key: T, value: float):
+        super().set(key, value)
+        self._try_replace_argmax(key)
 
-    def increment(self, pair: T, delta: float=1) -> float:  # Slightly more efficient version than super().increment() since it sometimes skips the argmax replacement.
+    def increment(self, key: T, delta: float=1) -> float:  # Slightly more efficient version than super().increment() since it sometimes skips the argmax replacement.
         try:
-            value = self.get(pair) + delta
+            value = self.get(key) + delta
         except KeyError:
             value = delta
-        super().set(pair, value)
+        super().set(key, value)
         if delta > 0:  # <---
             self._try_replace_argmax(pair)
         return value
 
-    def _try_replace_argmax(self, pair: T):
+    def _try_replace_argmax(self, key: T):
         if self._argmax is None:
             return  # We don't want to do any argmax-related computations unless the user asks for it. If the argmax is unknown, that means either we compute it here now and do a bunch updates on it, or we do a bunch of updates and then compute it.
-        if self._argmax != pair and self.get(pair) > self.get(self._argmax):
-            self._argmax = pair
+        if self._argmax != key and self.get(key) > self.get(self._argmax):
+            self._argmax = key
 
 
-class PairHeap(PairScoresArgmaxable[T]):
+class MaxHeap(NumericalMappingArgmaxable[T]):
 
     def __init__(self):
         self._minheap = heapdict()  # Stores negative frequencies.
 
-    def has(self, pair: T) -> bool:
-        return pair in self._minheap
+    def has(self, key: T) -> bool:
+        return key in self._minheap
 
     def get_argmax(self) -> tuple[T,float]:
-        pair, negfreq = self._minheap.peekitem()
-        return pair, -negfreq
+        key, negfreq = self._minheap.peekitem()
+        return key, -negfreq
 
     def pop_argmax(self) -> tuple[T,float]:  # Slightly more efficient.
         pair, negfreq = self._minheap.popitem()
         return pair, -negfreq
 
-    def set(self, pair: T, value: float):
-        self._minheap[pair] = -value
+    def set(self, key: T, value: float):
+        self._minheap[key] = -value
 
-    def get(self, pair: T) -> float:
-        return -self._minheap[pair]
+    def get(self, key: T) -> float:
+        return -self._minheap[key]
 
-    def pop(self, pair: T) -> float:
-        return -self._minheap.pop(pair)
+    def pop(self, key: T) -> float:
+        return -self._minheap.pop(key)
 
     def __iter__(self) -> Iterable[T]:
         return iter(self._minheap)
 
 
-class PairStatistics(ABC, Generic[T]):
+class CountingObjective(ABC, Generic[T]):
     """
     Tracks both raw pair counts as well as the metric used to choose BPE merges.
     """
 
     @property
     @abstractmethod
-    def counts(self) -> PairScores[T]:
+    def counts(self) -> NumericalMapping[T]:
         pass
 
     @abstractmethod
-    def has(self, pair: T) -> bool:
+    def has(self, key: T) -> bool:
         pass
 
     @abstractmethod
-    def pop(self, pair: T) -> tuple[int,float]:
+    def pop(self, key: T) -> tuple[int,float]:
         pass
 
     @abstractmethod
-    def recompute_objective(self, pairs: set[T]):
+    def recompute_objective(self, keys: set[T]):
         pass
 
     @abstractmethod
@@ -182,7 +187,6 @@ class PairStatistics(ABC, Generic[T]):
         pass
 
     def pop_argmax_objective(self) -> tuple[T, int, float]:
-        pair = self.get_argmax_objective()
-        freq, score = self.pop(pair)
-        return pair, freq, score
-
+        key = self.get_argmax_objective()
+        freq, score = self.pop(key)
+        return key, freq, score
