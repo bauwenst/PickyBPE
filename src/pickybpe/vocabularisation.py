@@ -13,6 +13,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from .util.domain import *
 from .utils import *
 
 
@@ -30,38 +31,6 @@ def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str
 class EventType(Enum):
     MERGE = 0
     SPLIT = 1
-
-
-class PairStatistics(ABC):
-    """
-    Tracks both raw pair counts as well as the metric used to choose BPE merges.
-    """
-
-    @property
-    @abstractmethod
-    def counts(self) -> PairScores:
-        pass
-
-    @abstractmethod
-    def has(self, pair: Pair) -> bool:
-        pass
-
-    @abstractmethod
-    def pop(self, pair: Pair) -> tuple[int,float]:
-        pass
-
-    @abstractmethod
-    def recompute_objective(self, pairs: set[Pair]):
-        pass
-
-    @abstractmethod
-    def get_argmax_objective(self) -> Pair:
-        pass
-
-    def pop_argmax_objective(self) -> tuple[Pair, int, float]:
-        pair = self.get_argmax_objective()
-        freq, score = self.pop(pair)
-        return pair, freq, score
 
 
 class RawBPEStatistics(PairStatistics):
@@ -115,6 +84,11 @@ class BPETrainer:
         bos_id: int = 2,
         eos_id: int = 3,
     ):
+        UNK = '[UNK]'
+        PAD = '[PAD]'
+        BOS = '[BOS]'
+        EOS = '[EOS]'
+
         self.coverage: float = character_coverage
         self.max_type_length = max_type_length
         self._ensured_vocabulary = set(ensured_vocabulary or [])
@@ -128,7 +102,7 @@ class BPETrainer:
             specials = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
         else:
             self.desired_vocab_size = vocab_size + 1  # User said they did not want to include specials. We include a special, so we pay for it.
-            self.unk_token = Token(0, "[UNK]", 0, special=True)  # You need at least a default UNK due to character coverage.
+            self.unk_token = Token(0, UNK, 0, special=True)  # You need at least a default UNK due to character coverage.
             specials = [self.unk_token]
         assert self.unk_token
         self.specials = specials
@@ -406,7 +380,7 @@ class PickyBPETrainer(BPETrainer):
         )
         self._threshold = picky_threshold
 
-    def _update_pairs_on_remove(self, removed_token: Token, subtokens: list[Token], obsolete_pairs: MCounter, state: BPETrainerState):
+    def _update_pairs_on_remove(self, removed_token: Token, subtokens: list[Token], obsolete_pairs: Counter, state: BPETrainerState):
         """
         Note that unlike in the case of a merge, the given pairs are BEFORE the event happened, not AFTER. That means
         we first need to deduce the new pair before we can increment its frequency.
