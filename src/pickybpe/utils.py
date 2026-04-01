@@ -135,13 +135,13 @@ class Word:
             else:
                 new_tokens.append(self.tokens[i])
                 i += 1
-        new_token_frequency = len(self.tokens) - len(new_tokens)
+        n_tokens_created_per_word = len(self.tokens) - len(new_tokens)
         if relink_word_to_tokens:
             pair[0].words.discard(self)
             pair[1].words.discard(self)
         self.tokens = new_tokens
         self._recalculate(relink_word_to_tokens=relink_word_to_tokens)
-        return new_token_frequency * self.freq
+        return n_tokens_created_per_word * self.freq
 
     def split_token(self, token: Token, subtokens: list[Token], relink_word_to_tokens: bool=True):
         new_tokens = []
@@ -154,71 +154,101 @@ class Word:
         self._recalculate(relink_word_to_tokens=relink_word_to_tokens)
 
 
-class PairCounts(ABC):
+class PairScores(ABC):
     @abstractmethod
     def has(self, pair: Pair) -> bool:
         pass
 
     @abstractmethod
-    def get(self, pair: Pair) -> int:
+    def get(self, pair: Pair) -> float:  # Raises when the key is unknown.
         pass
 
     @abstractmethod
-    def pop(self, pair: Pair) -> int:
+    def set(self, pair: Pair, value: float):
         pass
 
-    @abstractmethod
-    def get_argmax(self) -> tuple[Pair,int]:
-        pass
+    def increment(self, pair: Pair, delta: float=1) -> float:  # Creates the key if it is unknown.
+        try:
+            value = self.get(pair) + delta
+        except KeyError:
+            value = delta
+        self.set(pair, value)
+        return value
 
-    @abstractmethod
-    def pop_argmax(self) -> tuple[Pair,int]:
-        pass
-
-    @abstractmethod
-    def increment(self, pair: Pair, delta: int=1) -> int:
-        pass
-
-    def decrement(self, pair: Pair, delta: int=1) -> int:
+    def decrement(self, pair: Pair, delta: float=1) -> float:
         return self.increment(pair, -delta)
+
+    @abstractmethod
+    def pop(self, pair: Pair) -> float:
+        pass
 
     @abstractmethod
     def __iter__(self) -> Iterable[Pair]:
         pass
 
 
-class PairMCounter(PairCounts):
-    def __init__(self):
-        self._counts: MCounter[Pair] = MCounter()
-        self._argmax: Pair = None  # cache to avoid double computations.
+class PairScoresArgmaxable(PairScores):
+    """A pair collection which is also used for BPE's argmax."""
 
-    def has(self, pair: Pair) -> bool:
-        return pair in self._counts
+    @abstractmethod
+    def get_argmax(self) -> tuple[Pair,float]:
+        pass
 
-    def get_argmax(self) -> tuple[Pair,int]:
-        if self._argmax is None:
-            self._argmax = max(self._counts.keys(), key=self._counts.get)
-        return self._argmax, self._counts[self._argmax]
-
-    def pop_argmax(self) -> tuple[Pair,int]:
+    def pop_argmax(self) -> tuple[Pair,float]:
         pair, freq = self.get_argmax()
         self.pop(pair)
         return pair, freq
 
-    def pop(self, pair: Pair) -> int:
-        f = self._counts.pop(pair)
+
+class PairCounter(PairScores):
+    def __init__(self):
+        self._counts: MCounter[Pair] = MCounter()
+
+    def has(self, pair: Pair) -> bool:
+        return pair in self._counts
+
+    def pop(self, pair: Pair) -> float:
+        return self._counts.pop(pair)
+
+    def get(self, pair: Pair) -> float:
+        return self._counts[pair]
+
+    def set(self, pair: Pair, value: float):
+        self._counts[pair] = value
+
+    def __iter__(self) -> Iterable[Pair]:
+        return iter(self._counts)
+
+
+class PairCounterArgmaxable(PairCounter):
+    def __init__(self):
+        super().__init__()
+        self._argmax: Pair = None  # cache to avoid double computations.
+
+    def get_argmax(self) -> tuple[Pair,float]:
+        if self._argmax is None:
+            self._argmax = max(self._counts.keys(), key=self._counts.get)
+        return self._argmax, self.get(self._argmax)
+
+    def pop(self, pair: Pair) -> float:
+        value = super().pop(pair)
         if self._argmax == pair:
             self._argmax = None
-        return f
+        return value
 
-    def get(self, pair: Pair) -> int:
-        return self._counts.get(pair)
+    def set(self, pair: Pair, value: float):
+        super().set(pair, value)
+        self._try_replace_argmax(pair)
 
-    def increment(self, pair: Pair, delta: int=1) -> int:
-        self._counts[pair] += delta
-        if delta > 0:
+    def increment(self, pair: Pair, delta: float=1) -> float:  # Slightly more efficient version than super().increment() since it sometimes skips the argmax replacement.
+        try:
+            value = self.get(pair) + delta
+        except KeyError:
+            value = delta
+        super().set(pair, value)
+        if delta > 0:  # <---
             self._try_replace_argmax(pair)
-        return self._counts[pair]
+        return value
 
     def _try_replace_argmax(self, pair: Pair):
         if self._argmax is None:
@@ -226,11 +256,8 @@ class PairMCounter(PairCounts):
         if self._argmax != pair and self.get(pair) > self.get(self._argmax):
             self._argmax = pair
 
-    def __iter__(self) -> Iterable[Pair]:
-        return iter(self._counts)
 
-
-class PairHeap(PairCounts):
+class PairHeap(PairScoresArgmaxable):
 
     def __init__(self):
         self._minheap = heapdict()  # Stores negative frequencies.
@@ -238,26 +265,22 @@ class PairHeap(PairCounts):
     def has(self, pair: Pair) -> bool:
         return pair in self._minheap
 
-    def get_argmax(self) -> tuple[Pair,int]:
+    def get_argmax(self) -> tuple[Pair,float]:
         pair, negfreq = self._minheap.peekitem()
         return pair, -negfreq
 
-    def pop_argmax(self) -> tuple[Pair,int]:
+    def pop_argmax(self) -> tuple[Pair,float]:  # Slightly more efficient.
         pair, negfreq = self._minheap.popitem()
         return pair, -negfreq
 
-    def get(self, pair: Pair) -> int:
-        return -self._minheap.get(pair)
+    def set(self, pair: Pair, value: float):
+        self._minheap[pair] = -value
 
-    def pop(self, pair: Pair) -> int:
-        return -self._minheap.pop(pair)
-
-    def increment(self, pair: Pair, delta: int=1) -> int:
-        try:
-            self._minheap[pair] -= delta
-        except KeyError:
-            self._minheap[pair] = -delta
+    def get(self, pair: Pair) -> float:
         return -self._minheap[pair]
+
+    def pop(self, pair: Pair) -> float:
+        return -self._minheap.pop(pair)
 
     def __iter__(self) -> Iterable[Pair]:
         return iter(self._minheap)

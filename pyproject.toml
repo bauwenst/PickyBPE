@@ -25,3 +25,7 @@ dependencies = [
     "numpy",
     "heapdict"
 ]
+
+[project.urls]
+Source = "https://github.com/bauwenst/PickyBPE"
+Issues = "https://github.com/bauwenst/PickyBPE/issues"

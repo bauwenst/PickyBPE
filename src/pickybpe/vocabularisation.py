@@ -13,7 +13,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from .utils import MCounter, WHITESPACE, PAD, UNK, BOS, EOS, Token, Word, PathLike, PairCounts, PairHeap, PairMCounter
+from .utils import *
+
 
 T = TypeVar("T")
 def modlog(iterable: Iterable[T], step: int, units: str="elements", message: str="\tProcessed") -> Iterable[T]:
@@ -31,13 +32,72 @@ class EventType(Enum):
     SPLIT = 1
 
 
+class PairStatistics(ABC):
+    """
+    Tracks both raw pair counts as well as the metric used to choose BPE merges.
+    """
+
+    @property
+    @abstractmethod
+    def counts(self) -> PairScores:
+        pass
+
+    @abstractmethod
+    def has(self, pair: Pair) -> bool:
+        pass
+
+    @abstractmethod
+    def pop(self, pair: Pair) -> tuple[int,float]:
+        pass
+
+    @abstractmethod
+    def recompute_objective(self, pairs: set[Pair]):
+        pass
+
+    @abstractmethod
+    def get_argmax_objective(self) -> Pair:
+        pass
+
+    def pop_argmax_objective(self) -> tuple[Pair, int, float]:
+        pair = self.get_argmax_objective()
+        freq, score = self.pop(pair)
+        return pair, freq, score
+
+
+class RawBPEStatistics(PairStatistics):
+    """
+    Uses the raw BPE counts as argmaxable statistic.
+    """
+
+    def __init__(self):
+        self._counts = PairHeap()  # Each merge constant-time in |V|, so vocabularisation is O(|V|).
+        # self._counts = PairCounterArgmaxable()  # Each merge results from a linear-time search in |V|, so vocabularisation is O(|V|²).
+
+    @property
+    def counts(self) -> PairScores:
+        return self._counts
+
+    def has(self, pair: Pair) -> bool:
+        return self._counts.has(pair)
+
+    def pop(self, pair: Pair) -> tuple[int,float]:
+        freq = self._counts.pop(pair)
+        return freq, freq
+
+    def recompute_objective(self, pairs: set[Pair]):  # No need, it's already computed.
+        pass
+
+    def get_argmax_objective(self) -> Pair:
+        return self._counts.get_argmax()[0]
+
+
 @dataclass
 class BPETrainerState:
     str2token: dict[str,Token]
     actual_vocab_size: int
     new_id: int
     events: list[Union[tuple[Literal[EventType.SPLIT], Token, Iterable[Token]], tuple[Literal[EventType.MERGE], Iterable[Token], Token]]]
-    pairs: PairCounts
+    pairs: PairStatistics
 
 
 class BPETrainer:
@@ -79,7 +139,7 @@ class BPETrainer:
             actual_vocab_size=len(self.specials),
             new_id=max((token.id for token in self.specials), default=-1) + 1,
             events=[],
-            pairs=None  # Will be set later
+            pairs=RawBPEStatistics()
         )
 
     def _count_words_in_file(self, file: str) -> Counter[str]:
@@ -163,13 +223,11 @@ class BPETrainer:
             word.initialize_tokens(state.str2token)  # Stores the resulting tokenisation in-place, and links each token to the words that contain it.
 
     def _initialize_pairs(self, words: list[Word], state: BPETrainerState):
-        state.pairs = PairHeap()        # Each merge constant-time in |V|, so vocabularisation is O(|V|).
-        # state.pairs = PairMCounter()  # Each merge linear-time in |V|, so vocabularisation is O(|V|²).
         logger.info("Initializing token pairs...")
         for word in modlog(words, 500_000, "words"):
             for pair, freq_in_word_times_freq_of_word in word.pairs.items():
                 if self._validate_pair(pair):
-                    state.pairs.increment(pair, freq_in_word_times_freq_of_word)
+                    state.pairs.counts.increment(pair, freq_in_word_times_freq_of_word)
 
     def _update_pairs_on_merge(self, new_token: Token, pair: tuple[Token, Token], pairs_formed_with_new_token: Counter, state: BPETrainerState):
         """
@@ -177,14 +235,18 @@ class BPETrainer:
           1. You ADD new pairs (a,bc) and (bc,d), if they are valid.
           2. You REMOVE old pairs (a,b) and (c,d), not just (b,c).
         """
+        affected_pairs = set()
+
         # Add pairs
         for new_pair, freq in pairs_formed_with_new_token.items():
             if self._validate_pair(new_pair):
-                state.pairs.increment(new_pair, freq)
+                state.pairs.counts.increment(new_pair, freq)
+                affected_pairs.add(new_pair)
             else:
                 assert not state.pairs.has(new_pair)
 
         # Remove pairs
+        popped_pairs = set()
         for new_pair, freq in pairs_formed_with_new_token.items():
             # There are three cases:
             #   1. Both tokens in new_pair are the new token: case (bc,bc) which came from (b,c,b,c) so you lose the (c,b).
@@ -195,20 +257,26 @@ class BPETrainer:
             old_right_token = pair[0] if new_pair[1] is new_token else new_pair[1]
             old_pair = (old_left_token, old_right_token)
             if state.pairs.has(old_pair):  # Since the new token is the result of a merge of two existing tokens, it is true that IF those tokens could validly be merged with their neighbours, that has already been registered in pairs. When it hasn't been, it is probably because the pair was never valid: e.g., in [a, b, UNK], if you merge to [ab, UNK], you don't lose the merge (b, UNK).
-                new_freq = state.pairs.decrement(old_pair, freq)
+                new_freq = state.pairs.counts.decrement(old_pair, freq)
+                affected_pairs.add(old_pair)
                 if new_freq <= 0:
                     state.pairs.pop(old_pair)
+                    popped_pairs.add(old_pair)
+
+        state.pairs.recompute_objective(affected_pairs - popped_pairs)
 
     def _scrutinize_parent_after_merge(self, parent: Token, child: Token, pair_frequency: int, state: BPETrainerState):
         pass
+
+    def _stopping_condition(self, state: BPETrainerState) -> bool:
+        return state.actual_vocab_size >= self.desired_vocab_size
 
     def _merge_token_in_words(self, new_token: Token, pair_to_merge: tuple[Token, Token], state: BPETrainerState) -> int:  # Assumes the merge being performed is valid.
         # Update the words where the pair appears, and collect new pairs formed.
         actual_freq = 0
         newly_created_pairs = Counter()
         for word in pair_to_merge[0].words & pair_to_merge[1].words:
-            if pair_to_merge in word.pairs:
-                word.pairs.pop(pair_to_merge)
+            if pair_to_merge in word.pairs:  # FIXME: word.pairs.items() likely has a triplet problem
                 actual_freq += word.merge_pair(pair_to_merge, new_token)  # note that this may create invalid pairs (e.g. too long), but we don't care, we filter later.
                 newly_created_pairs.update({p: f for p, f in word.pairs.items() if new_token in p})  # .update is accumulative; also note that we don't filter out valid pairs here yet.
 
@@ -250,15 +318,15 @@ class BPETrainer:
         self._encode_words(words, state)
         self._initialize_pairs(words, state)
         merge_times = []
-        while state.actual_vocab_size < self.desired_vocab_size:
+        while not self._stopping_condition(state):
             start_time = time.perf_counter_ns()
 
-            pair, count = state.pairs.pop_argmax()
-            if count <= 0:
+            pair, count, score = state.pairs.pop_argmax_objective()
+            if count <= 0:  # TODO: I feel like this probably never happens and instead the above line will crash.
                 logger.info(f'No more pairs to merge. Stopping with vocab size of {state.actual_vocab_size}.')
                 break
 
-            freq = self._merge_pair(pair, state)
+            log_new_freq = self._merge_pair(pair, state)  # TODO: Shouldn't this equal 'count'?
             state.actual_vocab_size += 1
 
             merge_times.append(time.perf_counter_ns() - start_time)
@@ -266,7 +334,7 @@ class BPETrainer:
                 logger.info(
                     f'|V| = {state.actual_vocab_size}. '
                     f'Last {logging_step} merges averaged {sum(merge_times)/(len(merge_times)*1_000_000):.2f}ms. '
-                    f'Just merged {pair[0].str} + {pair[1].str} with frequency {freq}.'
+                    f'Just merged {pair[0].str} + {pair[1].str} with frequency {log_new_freq}.'
                 )
                 merge_times = []
 
@@ -343,6 +411,8 @@ class PickyBPETrainer(BPETrainer):
         Note that unlike in the case of a merge, the given pairs are BEFORE the event happened, not AFTER. That means
         we first need to deduce the new pair before we can increment its frequency.
         """
+        affected_pairs = set()
+
         assert len(subtokens) >= 2
         first_subtoken = subtokens[0]
         last_subtoken  = subtokens[-1]
@@ -354,14 +424,17 @@ class PickyBPETrainer(BPETrainer):
 
             # Do the equivalent of what is done at the start of _update_pairs_on_merge, namely incrementing new pairs if they are valid.
             if self._validate_pair(new_pair):
-                state.pairs.increment(new_pair, freq)
+                state.pairs.counts.increment(new_pair, freq)
+                affected_pairs.add(new_pair)
             else:
                 assert not state.pairs.has(new_pair)
 
             # And now do what happens at the bottom of _update_pairs_on_merge, namely checking "Was the old pair registered? If yes, decrement its count now that the merge is no longer available."
             if state.pairs.has(old_pair):
-                assert state.pairs.get(old_pair) == freq  # We don't do a decrement and zero check, because we know for sure that all instances of removed_token were considered and thus all instances of it with the other token in this old pair. In other words: this pair cannot exist elsewhere.
+                assert state.pairs.counts.get(old_pair) == freq  # We don't do a decrement and zero check, because we know for sure that all instances of removed_token were considered and thus all instances of it with the other token in this old pair. In other words: this pair cannot exist elsewhere.
                 state.pairs.pop(old_pair)
+
+        state.pairs.recompute_objective(affected_pairs)
 
     def _remove_if_possible(self, token: Token, merged_freq: int, state: BPETrainerState) -> bool:
         if merged_freq / (token.freq + merged_freq) > self._threshold:
@@ -372,7 +445,7 @@ class PickyBPETrainer(BPETrainer):
                     t.freq += token.freq
                 for pair in zip(subtokens[:-1], subtokens[1:]):
                     if self._validate_pair(pair):
-                        state.pairs.increment(pair, token.freq)
+                        state.pairs.counts.increment(pair, token.freq)
                     else:
                         assert not state.pairs.has(pair)
 
