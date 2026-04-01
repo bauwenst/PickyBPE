@@ -1,14 +1,8 @@
 from typing import Optional, Iterable, TypeVar, Union, Generic
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 from collections import Counter
 from heapdict import heapdict
-
-
-WHITESPACE = '▁'
-
-PathLike = Union[str, Path]
 
 
 T = TypeVar("T")

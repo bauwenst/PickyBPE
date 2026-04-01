@@ -4,6 +4,9 @@ from typing import Iterable, Optional
 from .counters import *
 
 
+WHITESPACE = '▁'
+
+
 class Token:
 
     def __init__(

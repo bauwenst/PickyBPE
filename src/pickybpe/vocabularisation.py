@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Union, Iterable, TypeVar, Literal
-from enum import Enum
+from typing import Literal, TypeVar
 from pathlib import Path
+from enum import Enum
 from dataclasses import dataclass
 
-from collections import defaultdict, Counter
-import numpy as np
+from collections import defaultdict
 import time
 import json
 import logging
@@ -14,7 +13,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from .util.domain import *
-from .utils import *
+from .util.counters import *
 
 
 T = TypeVar("T")
@@ -33,7 +32,7 @@ class EventType(Enum):
     SPLIT = 1
 
 
-class RawBPEStatistics(PairStatistics):
+class RawBPEStatistics(PairStatistics[Pair]):
     """
     Uses the raw BPE counts as argmaxable statistic.
     """
@@ -43,7 +42,7 @@ class RawBPEStatistics(PairStatistics):
         # self._counts = PairCounterArgmaxable()  # Each merge results from a linear-time search in |V|, so vocabularisation is O(|V|²).
 
     @property
-    def counts(self) -> PairScores:
+    def counts(self) -> PairScores[Pair]:
         return self._counts
 
     def has(self, pair: Pair) -> bool:
@@ -321,7 +320,7 @@ class BPETrainer:
     def fit_from_file(self, input_file: Union[Path, str], model_file: Union[Path, str], logging_step: int=200) -> Path:
         return self._fit_from_counts(self._count_words_in_file(input_file), model_file, logging_step)
 
-    def _dump(self, state: BPETrainerState, path: PathLike):
+    def _dump(self, state: BPETrainerState, path: Path):
         if path.is_dir():
             path = path / "tokenizer.json"
         logger.info(f'Dumping model to {path.as_posix()}...')

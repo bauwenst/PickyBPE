@@ -1,4 +1,4 @@
-from typing import Union, Any, Optional
+from typing import Any, Optional, Union
 from pathlib import Path
 
 import json
@@ -9,7 +9,7 @@ from functools import lru_cache
 import logging
 logger = logging.getLogger(__name__)
 
-from .utils import WHITESPACE, UNK, Token, Word, PathLike
+from .util.domain import *
 
 MergeEventIds = dict[tuple[Token, Token], list[int]]
 SplitEventIds = dict[Token, list[int]]
@@ -29,9 +29,10 @@ class PickyBPESegmenter:
         split_map: SplitEventIds,
         splits: SplitResults,
 
-        events: Optional[list[dict[str, Any]]]  # Only used in the inefficient implementation of encoding.
+        events: Optional[list[dict[str, Any]]],  # Only used in the inefficient implementation of encoding.
+        unk: Optional[str]=None
     ):
-        self.str2token: dict[str,Token] = defaultdict(lambda: str2token[UNK], str2token) if UNK in str2token else str2token
+        self.str2token: dict[str,Token] = defaultdict(lambda: str2token[unk], str2token) if unk in str2token else str2token
         self.id2int: dict[str,int]      = id2int
         self.id2token: dict[int,Token]  = id2token
         self.int2id: dict[int,str]      = int2id
@@ -43,7 +44,7 @@ class PickyBPESegmenter:
         self.events: list[dict[str,Any]] = events
 
     @classmethod
-    def from_pretrained(self, pickybpe_model_path: PathLike) -> "PickyBPESegmenter":
+    def from_pretrained(self, pickybpe_model_path: Path) -> "PickyBPESegmenter":
         with open(pickybpe_model_path, "r", encoding="utf-8") as f:
             serialised = json.load(f)
 
