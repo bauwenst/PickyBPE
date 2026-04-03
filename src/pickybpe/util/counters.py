@@ -1,4 +1,4 @@
-from typing import Optional, Iterable, TypeVar, Union, Generic
+from typing import Optional, Iterable, TypeVar, Union, Generic, Iterator
 from abc import ABC, abstractmethod
 
 from collections import Counter
@@ -57,7 +57,7 @@ class NumericalMapping(ABC, Generic[T]):
         pass
 
     @abstractmethod
-    def __iter__(self) -> Iterable[T]:
+    def __iter__(self) -> Iterator[T]:
         pass
 
 
@@ -121,7 +121,7 @@ class FlatCounterArgmaxable(FlatCounter[T]):
             value = delta
         super().set(key, value)
         if delta > 0:  # <---
-            self._try_replace_argmax(pair)
+            self._try_replace_argmax(key)
         return value
 
     def _try_replace_argmax(self, key: T):
@@ -158,35 +158,3 @@ class MaxHeap(NumericalMappingArgmaxable[T]):
 
     def __iter__(self) -> Iterable[T]:
         return iter(self._minheap)
-
-
-class CountingObjective(ABC, Generic[T]):
-    """
-    Tracks both raw pair counts as well as the metric used to choose BPE merges.
-    """
-
-    @property
-    @abstractmethod
-    def counts(self) -> NumericalMapping[T]:
-        pass
-
-    @abstractmethod
-    def has(self, key: T) -> bool:
-        pass
-
-    @abstractmethod
-    def pop(self, key: T) -> tuple[int,float]:
-        pass
-
-    @abstractmethod
-    def recompute_objective(self, keys: set[T]):
-        pass
-
-    @abstractmethod
-    def get_argmax_objective(self) -> T:
-        pass
-
-    def pop_argmax_objective(self) -> tuple[T, int, float]:
-        key = self.get_argmax_objective()
-        freq, score = self.pop(key)
-        return key, freq, score
