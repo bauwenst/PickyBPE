@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, TypeVar
+from typing import Literal, TypeVar, Optional
 from pathlib import Path
 from enum import Enum
 from dataclasses import dataclass
@@ -84,7 +84,11 @@ class CountingObjective(ABC):
         pass
 
     @abstractmethod
-    def recompute_objective(self, pairs: Iterable[Pair], state: BPETrainerState):
+    def recompute_objective(self, pairs_with_updated_counts: Iterable[Pair], state: BPETrainerState, subtokens: Optional[Pair]):
+        """
+        Re-synchronise the objective knowing that the given pairs had their counts changed in the latest token merge/removal.
+        (Depending on the objective, many more pairs need to have their objective updated though.)
+        """
         pass
 
     @abstractmethod
@@ -117,8 +121,9 @@ class RawBPEStatistics(CountingObjective):
         freq = self._counts.pop(pair)
         return freq, freq
 
-    def recompute_objective(self, pairs: Iterable[Pair], state: BPETrainerState):  # No need, it's already computed.
-        pass
+
+    def recompute_objective(self, pairs_with_updated_counts: Iterable[Pair], state: BPETrainerState, subtokens: Optional[Pair]):
+        pass  # No need, it's already computed.
 
     def get_argmax_objective(self) -> Pair:
         return self._counts.get_argmax()[0]
@@ -262,7 +267,7 @@ class BPETrainer:
             for pair, freq_in_word_times_freq_of_word in word.pairs.items():
                 if self._validate_pair(pair):
                     state.pairs.counts.increment(pair, freq_in_word_times_freq_of_word)
-        state.pairs.recompute_objective(state.pairs.counts, state)
+        state.pairs.recompute_objective(state.pairs.counts, state, None)
 
     def _update_pairs_on_merge(self, new_token: Token, pair: tuple[Token, Token], pairs_formed_with_new_token: Counter, state: BPETrainerState):
         """
@@ -298,7 +303,7 @@ class BPETrainer:
                     state.pairs.pop(old_pair)
                     popped_pairs.add(old_pair)
 
-        state.pairs.recompute_objective(affected_pairs - popped_pairs, state)
+        state.pairs.recompute_objective(affected_pairs - popped_pairs, state, pair)
 
     def _scrutinize_parent_after_merge(self, parent: Token, child: Token, pair_frequency: int, state: BPETrainerState):
         pass
@@ -456,7 +461,7 @@ class PickyBPETrainer(BPETrainer):
         Note that unlike in the case of a merge, the given pairs are BEFORE the event happened, not AFTER. That means
         we first need to deduce the new pair before we can increment its frequency.
         """
-        affected_pairs = set()
+        created_pairs = set()
 
         assert len(subtokens) >= 2
         first_subtoken = subtokens[0]
@@ -470,7 +475,7 @@ class PickyBPETrainer(BPETrainer):
             # Do the equivalent of what is done at the start of _update_pairs_on_merge, namely incrementing new pairs if they are valid.
             if self._validate_pair(new_pair):
                 state.pairs.counts.increment(new_pair, freq)
-                affected_pairs.add(new_pair)
+                created_pairs.add(new_pair)
             else:
                 assert not state.pairs.has(new_pair)
 
@@ -479,7 +484,7 @@ class PickyBPETrainer(BPETrainer):
                 assert state.pairs.counts.get(old_pair) == freq  # We don't do a decrement and zero check, because we know for sure that all instances of removed_token were considered and thus all instances of it with the other token in this old pair. In other words: this pair cannot exist elsewhere.
                 state.pairs.pop(old_pair)
 
-        state.pairs.recompute_objective(affected_pairs, state)
+        state.pairs.recompute_objective(created_pairs, state, subtokens)
 
     def _remove_if_possible(self, token: Token, merged_freq: int, state: BPETrainerState) -> bool:
         if merged_freq / (token.freq + merged_freq) > self._threshold:
