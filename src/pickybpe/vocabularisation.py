@@ -316,7 +316,7 @@ class BPETrainer:
         actual_freq = 0
         newly_created_pairs = Counter()
         for word in pair_to_merge[0].words & pair_to_merge[1].words:
-            if pair_to_merge in word.pairs:  # FIXME: word.pairs.items() likely has a triplet problem
+            if pair_to_merge in word.pairs:
                 actual_freq += word.merge_pair(pair_to_merge, new_token)  # note that this may create invalid pairs with the new token (e.g. pairs xy z too long), but we'll filter those later. The frequency of xy that comes out of this is still correct of course.
                 newly_created_pairs.update({p: f for p, f in word.pairs.items() if new_token in p})  # .update is accumulative; also note that we don't filter out valid pairs here yet.
 

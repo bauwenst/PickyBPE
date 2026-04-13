@@ -93,7 +93,7 @@ class Word:
         return f"{self._str} ({self.freq})"
 
     def _recalculate(self, relink_word_to_tokens: bool=True) -> None:
-        self.pairs = MulCounter(zip(self.tokens[:-1], self.tokens[1:])) * self.freq
+        self.pairs = MulCounter(skipImmediateEquals(zip(self.tokens[:-1], self.tokens[1:]))) * self.freq
         if relink_word_to_tokens:
             for token in self.tokens:
                 token.words.add(self)
@@ -125,3 +125,19 @@ class Word:
                 new_tokens.append(t)
         self.tokens = new_tokens
         self._recalculate(relink_word_to_tokens=relink_word_to_tokens)
+
+
+def skipImmediateEquals(iterable: Iterable[T]) -> Iterator[T]:
+    """
+    Skips each element which follows an element that is (1) equal to it and (2) not itself skipped already.
+    The function that makes sure that a span of tokens like x x x x x registers as 2 pairs (x,x) rather than 4.
+    (Doesn't work to deduplicate None.)
+    """
+    prev = None
+    for thing in iterable:
+        if prev is not None and thing == prev:
+            prev = None
+            continue
+
+        prev = thing
+        yield thing
